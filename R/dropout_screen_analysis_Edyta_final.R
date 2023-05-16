@@ -13,7 +13,7 @@ library(UpSetR)
 library(ggsci)
 library(AnnotationDbi)
   
-source("C:/GREENBLATT/Rscripts/CrisprScreen/crispr_screen_analysis_lib.R")
+source("C:/GREENBLATT/Rscripts/CrisprScreen/R/crispr_screen_analysis_lib.R")
 color_store <- brewer.pal(n = 8, name = "Dark2")
 name_map <- NULL
 mapfile <- "C:/GREENBLATT/Rscripts/CrisprScreen/resources/hgnc_geneName_updates_2019.txt"
@@ -54,7 +54,8 @@ control_gene <- c("EGFP", "LacZ", "luciferase")
 
 ## scale and normalize data ####
 if(1){
-   wd <- "C:/data/raw/EDYTA/dropoutScreen/all_screens" 
+   #wd <- "C:/data/raw/EDYTA/dropoutScreen/all_screens" 
+   wd <- "C:/data/raw/EDYTA/ebvScreen/all_screens" 
    
    setwd(wd)
    format2 <- "_guideRawCount.tab"
@@ -65,27 +66,28 @@ if(1){
    
    if(1){
       samples <- gsub("_guideRawCount.tab", "", guidefiles)
-      replicates <- unlist(lapply(guidefiles, function(x)split_group(x,4,6)))
-      subjects <- unlist(lapply(guidefiles, function(x)split_group(x,4,4)))
+      replicates <- unlist(lapply(guidefiles, function(x)split_group(x,3,7))) #4,6 for dropoutScreen
+      subjects <- unlist(lapply(guidefiles, function(x)split_group(x,3,4))) #4,4 for dropoutScreen
       design <- data.frame(samples, replicates, subjects)
       rownames(design) <- guidefiles
       design <- design[order(design$subjects),]
       design <- design[!grepl("T10|NR", design$replicates), ]  ## exclude T10 and NR samples
       if(!file.exists("experimental_design_final.tab")){
          write.table(design, "experimental_design_final.tab", sep="\t", row.names=T, col.names=NA, quote=F)
-         return("EDIT experimental_design_final.tab NOW!")
+         message("EDIT experimental_design_final.tab NOW!")
       }else{
          eXdesign <- data.frame(read.delim("experimental_design_final.tab", header=TRUE, sep="\t", stringsAsFactors=F))
       }
    }
-   
    
    rownames(eXdesign) <- eXdesign$X
    eXdesign <- eXdesign[,-1]
    
    eXdesign
    
+   sink("process_guideRawCount_log.txt")
    guide_data <- process_guideRawCount(eXdesign) ## output can be used for BAGEL directly
+   sink()
    gene_data <- process_geneRawCount(eXdesign)
    
    
@@ -94,8 +96,7 @@ if(1){
    combined_lfc_guide_table <- NULL ## each row is a guide
    combined_scaled_guide_table <- NULL ## each row is a guide
    combined_normalized_guide_table <- NULL ## each row is a guide
-   
-   #for (wd in c(wd1, wd2, wd3, wd4)){
+  
    for(subject in unique(eXdesign$subjects)){
       
       geneRaw_table <- gene_data[[subject]]
@@ -115,6 +116,14 @@ if(1){
       head(guideScaled_table)
       dim(guideScaled_table)
       summary(guideScaled_table)
+      
+      head(guideNormalized_table)
+      dim(guideNormalized_table)
+      summary(guideNormalized_table)
+      
+      head(guideLFC_table)
+      dim(guideLFC_table)
+      summary(guideLFC_table)
       
       geneRaw_table <- geneRaw_table[TKO3_genes, ]
       
@@ -151,8 +160,8 @@ if(1){
    }
    
    
-   
-   GFPhome_dir <- "C:/data/raw/EDYTA/dropoutScreen/GFP_final" 
+   #GFPhome_dir <- "C:/data/raw/EDYTA/dropoutScreen/GFP_final"
+   GFPhome_dir <- "C:/data/raw/EDYTA/ebvScreen/GFP_final" 
    
    
    if(!dir.exists(GFPhome_dir)){
@@ -167,35 +176,39 @@ if(1){
    write.table(combined_gene_table, file.path(GFPhome_dir,"combined_gene_rawCount_table.tab"), row.names=T, col.names=NA, sep="\t", quote=F)
    
    dim(combined_guide_table)
-   NAs <- apply(combined_guide_table, 1, function(x) sum(is.na(x)))
-   dim(combined_guide_table[which(NAs == (ncol(combined_guide_table)-2)),])
-   combined_guide_table <- combined_guide_table[-which(NAs == (ncol(combined_guide_table)-2)),]
+   NAc <- apply(combined_guide_table, 1, function(x) sum(is.na(x)))
+   NAs <- NAc == ncol(combined_guide_table)-2
+   combined_guide_table <- combined_guide_table[!NAs,]
    write.table(combined_guide_table, file.path(GFPhome_dir,"combined_guide_rawCount_table.tab"), row.names=F, sep="\t", quote=F)
-   #combined_guide_filtered <- na.omit(combined_guide_table[, 3:ncol(combined_guide_table)])
+   combined_guide_filtered <- na.omit(combined_guide_table[, 3:ncol(combined_guide_table)])
+   plot_heatmap(combined_guide_filtered, "guide_rawCount")
    
    dim(combined_scaled_guide_table)
-   NAs <- apply(combined_scaled_guide_table, 1, function(x) sum(is.na(x)))
-   dim(combined_scaled_guide_table[which(NAs == (ncol(combined_scaled_guide_table)-2)),])
-   combined_scaled_guide_table <- combined_scaled_guide_table[-which(NAs == (ncol(combined_scaled_guide_table)-2)),]
+   NAc <- apply(combined_scaled_guide_table, 1, function(x) sum(is.na(x)))
+   NAs <- NAc == ncol(combined_scaled_guide_table)-2
+   combined_scaled_guide_table <- combined_scaled_guide_table[!NAs,]
    ## "combined_guide_scaledCount_table.tab" can be used as input for DrugZ directly
    write.table(combined_scaled_guide_table, file.path(GFPhome_dir,"combined_guide_scaledCount_table.tab"), row.names=F, sep="\t", quote=F)
-   #combined_scaled_guide_filtered <- na.omit(combined_scaled_guide_table[, 3:ncol(combined_scaled_guide_table)])
+   combined_scaled_guide_filtered <- na.omit(combined_scaled_guide_table[, 3:ncol(combined_scaled_guide_table)])
+   plot_heatmap(combined_scaled_guide_filtered, "guide_scaledCount")
    
    
    dim(combined_normalized_guide_table)
-   NAs <- apply(combined_normalized_guide_table, 1, function(x) sum(is.na(x)))
-   dim(combined_normalized_guide_table[which(NAs == (ncol(combined_normalized_guide_table)-2)),])
-   combined_normalized_guide_table <- combined_normalized_guide_table[-which(NAs == (ncol(combined_normalized_guide_table)-2)),]
+   NAc <- apply(combined_normalized_guide_table, 1, function(x) sum(is.na(x)))
+   NAs <- NAc == ncol(combined_normalized_guide_table)-2
+   combined_normalized_guide_table <- combined_normalized_guide_table[!NAs,]
    write.table(combined_normalized_guide_table, file.path(GFPhome_dir,"combined_guide_normalizedCount_table.tab"), row.names=F, sep="\t", quote=F)
-   #combined_normalized_guide_filtered <- na.omit(combined_normalized_guide_table[, 3:ncol(combined_normalized_guide_table)])
+   combined_normalized_guide_filtered <- na.omit(combined_normalized_guide_table[, 3:ncol(combined_normalized_guide_table)])
+   plot_heatmap(combined_normalized_guide_filtered, "guide_normalizedCount")
    
    
    dim(combined_lfc_guide_table)
-   NAs <- apply(combined_lfc_guide_table, 1, function(x) sum(is.na(x)))
-   dim(combined_lfc_guide_table[which(NAs == (ncol(combined_lfc_guide_table)-2)),])
-   combined_lfc_guide_table <- combined_lfc_guide_table[-which(NAs == (ncol(combined_lfc_guide_table)-2)),]
+   NAc <- apply(combined_lfc_guide_table, 1, function(x) sum(is.na(x)))
+   NAs <- NAc == ncol(combined_lfc_guide_table)-2
+   combined_lfc_guide_table <- combined_lfc_guide_table[!NAs,]
    write.table(combined_lfc_guide_table, file.path(GFPhome_dir,"combined_guide_lfc_table.tab"), row.names=F, sep="\t", quote=F)
-   #combined_lfc_guide_filtered <- na.omit(combined_lfc_guide_table[, 3:ncol(combined_lfc_guide_table)])
+   combined_lfc_guide_filtered <- na.omit(combined_lfc_guide_table[, 3:ncol(combined_lfc_guide_table)])
+   plot_heatmap(combined_lfc_guide_filtered, "guide_lfcCount")
    
 }
 
@@ -203,8 +216,8 @@ if(1){
 
 ## qGI analysis ####
 if(1){
-   wd <- "C:/data/raw/EDYTA/dropoutScreen/all_screens" 
-   
+   #wd <- "C:/data/raw/EDYTA/dropoutScreen/all_screens" 
+   wd <- "C:/data/raw/EDYTA/ebvScreen/all_screens"
    setwd(wd)
    
    eXdesign <- data.frame(read.delim("experimental_design_final.tab", header=TRUE, sep="\t", stringsAsFactors=F))
@@ -214,13 +227,13 @@ if(1){
    
    eXdesign
    
-   hwd <- "C:/data/raw/EDYTA/dropoutScreen/GFP_final" 
+   #hwd <- "C:/data/raw/EDYTA/dropoutScreen/GFP_final" 
+   hwd <- "C:/data/raw/EDYTA/ebvScreen/GFP_final"
   
    setwd(hwd)
    combined_lfc_guide_table <- read.delim("combined_guide_lfc_table.tab", header=T, sep="\t")
    
-   
-   qGI_dir <- file.path(hwd, "qGI") 
+   qGI_dir <- file.path(hwd, "qGI") # "qGI_diff" when loess is set to FALSE in 'compute_lfc_residuals'
    
    if(!dir.exists(qGI_dir)){
       dir.create(qGI_dir, showWarnings = F)
@@ -230,13 +243,13 @@ if(1){
    dim(combined_lfc_guide_table)
    summary(combined_lfc_guide_table) 
    
-   lfc_residuals <- compute_lfc_residuals(eXdesign, combined_lfc_guide_table, plot=T)
+   lfc_residuals <- compute_lfc_residuals(eXdesign, combined_lfc_guide_table, loess=TRUE, plot=TRUE)
    
    head(lfc_residuals)
    
    fiteb_results <- modt_lfc_residuals(eXdesign, lfc_residuals)
    
-   qGI_results <- plot_qGI_results(test_results = fiteb_results, pvalue_cutoff=0.05, gsea=F)
+   qGI_results <- plot_qGI_results(test_results = fiteb_results, pvalue_cutoff=0.05, gsea=FALSE)
    
    save(qGI_results, file=file.path(qGI_dir, "results_list.Rdata"))
 }
@@ -261,13 +274,6 @@ if(1){
   normalized_count <- read.delim("combined_guide_normalizedCount_table.tab", header=T, sep="\t")
   lfc_count <- read.delim("combined_guide_lfc_table.tab", header=T, sep="\t")
   
-  NAs <- apply(lfc_count, 1, function(x) sum(is.na(x)))
-  dim(lfc_count[which(NAs == (ncol(lfc_count)-2)),])
-  lfc_count <- lfc_count[-which(NAs == (ncol(lfc_count)-2)),]
-  
-  NAs <- apply(scaled_count, 1, function(x) sum(is.na(x)))
-  dim(scaled_count[which(NAs == (ncol(scaled_count)-2)),])
-  scaled_count <- scaled_count[-which(NAs == (ncol(scaled_count)-2)),]
   
   ## compare between-replicates correlation
   replicates <- colnames(scaled_count)[3:ncol(scaled_count)]
@@ -2127,15 +2133,22 @@ if(1){
   gsP <- update_gene_names(name_map, gsP$Gene)
   gsN <- update_gene_names(name_map, gsN$Gene)
   
-  hwd <- "C:/data/raw/EDYTA/dropoutScreen/GFP_final"
-  ## copy file to bc2 for bagel scoring
-  sshSession <- ssh_connect(host="shuyepu@bc2.ccbr.utoronto.ca", keyfile="C:/cygwin64/home/greenblatt/.ssh/id_rsa")
+  #hwd <- "C:/data/raw/EDYTA/dropoutScreen/GFP_final"
+  hwd <- "C:/data/raw/EDYTA/ebvScreen/GFP_final"
   setwd(hwd)
-  scp_upload(sshSession, "combined_guide_lfc_table.tab", "./bagel-for-knockout-screens-code/data") 
+  lfc_table <- read.delim("combined_guide_lfc_table.tab")
+  mat <- lfc_table[,3:ncol(lfc_table)]
+  mat[is.na(mat)] <- 0
+  na_replaced_table <- cbind(lfc_table[, 1:2], mat)
+  write.table(na_replaced_table, "combined_guide_lfc_table_for_bagel.tab", row.names=FALSE, quote=FALSE, sep="\t")
+  ## copy file to rc cluster for bagel scoring
+  sshSession <- ssh_connect(host="shuyepu@rc01.ccbr.utoronto.ca", keyfile="C:/cygwin64/home/greenblatt/.ssh/id_rsa")
+  #scp_upload(sshSession, "combined_guide_lfc_table.tab", "./bagel-for-knockout-screens-code/data") 
+  scp_upload(sshSession, "combined_guide_lfc_table_for_bagel.tab", "./bagel-for-knockout-screens-code/ebvScreen")
   
   ssh_disconnect(sshSession)
   ###
-  ### run run_BAGEL_oneInput.sh on bc2 now
+  ### run run_BAGEL_oneInput.sh on rc cluster now
   ###
 
   dataset <- "bagel"
@@ -2151,8 +2164,8 @@ if(1){
   
   sshSession <- ssh_connect(host="shuyepu@bc2.ccbr.utoronto.ca", keyfile="C:/cygwin64/home/greenblatt/.ssh/id_rsa")
   
-  scp_download(sshSession, files="./bagel-for-knockout-screens-code/data", to=".")
-  system("mv ./data/*_bagel.bf .")
+  scp_download(sshSession, files="./bagel-for-knockout-screens-code/ebvScreen", to=".")
+  system("mv ./ebvScreen/*_bagel.bf .")
   
   ssh_disconnect(sshSession)
   
@@ -2165,7 +2178,7 @@ if(1){
   
   for (bagel_file in bagel_files){
     bf <- read.delim(bagel_file)
-    subject <- unlist(strsplit(bagel_file, split="_"))[1]
+    subject <- gsub("_bagel.bf", "", bagel_file, fixed=TRUE)
     bagel_results_list[[subject]] <- bf
   }
   
@@ -2186,7 +2199,7 @@ if(1){
   
   bf_table <- bagel_combined[, grepl("_BF", colnames(bagel_combined))]
   rownames(bf_table) <- bagel_combined$GENE
-  screens <- unlist(lapply(colnames(bf_table), function(x) unlist(strsplit(x, split="_"))[1]))
+  screens <- unlist(lapply(colnames(bf_table), function(x) gsub("_BF", "", x, fixed=TRUE)))
   colnames(bf_table) <- screens
   dim(bf_table)
   NAs <- apply(bf_table, 1, function(x) sum(is.na(x))>0)
@@ -2236,10 +2249,10 @@ if(1){
   dev.off()
   
   pdf("ROC_plot.pdf", height=8, width=8)
-  screens <- unlist(lapply(names(fdr_stats_bf$FDR), function(x) unlist(strsplit(x, split="_"))[1]))
+  #screens <- unlist(lapply(names(fdr_stats_bf$FDR), function(x) gsub("_BF", "", x, fixed=TRUE)))
   colors <- terrain.colors(length(screens))
-  colors[1:2] <- c("red2", "black")
-  plot(fdr_stats_bf$FDR$GFP1$Precision, fdr_stats_bf$FDR$GFP1$Recall, type="l", col=colors[1], lwd=2, main="BF score ROC", xlab="Precision", ylab="Recall")
+  colors[which(screens == "HEK293T")] <-  "black"
+  plot(fdr_stats_bf$FDR$HEK293T$Precision, fdr_stats_bf$FDR$HEK293T$Recall, type="l", col=colors[1], lwd=2, main="BF score ROC", xlab="Precision", ylab="Recall")
   for(i in 2:length(screens)){
     lines(fdr_stats_bf$FDR[[i]]$Precision, fdr_stats_bf$FDR[[i]]$Recall, col=colors[i], lwd=2)
   }
@@ -2248,10 +2261,14 @@ if(1){
   legend("bottomleft", legend=screens, col=colors, lwd=2)
   dev.off()
   
+  setwd("C:/data/raw/EDYTA/dropoutScreen")
+  cfile <- "common_essentials_Depmap_public_2022Q2.tab"
+  hfile <- "ListofEssentialGenesHEK293.tab"
+  op <- "Overlap_of_essential"
+  plot_overlap_genes(c(cfile, hfile), c(1,1),  outPrefix = op)
   
   
-  
-  ## G3_table3 not relavent for now
+  ## G3_table3 not relevant for now
   if(0){
     ## this table is a supp material for the paper
     ## Evaluation and Design of Genome-Wide CRISPR/SpCas9 Knockout Screens, Hart et al.

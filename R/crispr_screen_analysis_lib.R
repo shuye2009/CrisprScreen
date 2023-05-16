@@ -2,6 +2,7 @@ library(pheatmap)
 library(gplots)
 library(corrplot)
 library(ggpubr)
+library(patchwork)
 library(Rtsne)
 library(psych)
 library(DESeq2)
@@ -16,6 +17,7 @@ library(GO.db)
 library(GOSemSim)
 library(ggpointdensity)
 library(viridis)
+library(EnhancedVolcano)
 
 source("C:/GREENBLATT/Rscripts/RNAseq/Function_analysis_for_RNAseq_lib.R")
 
@@ -279,7 +281,7 @@ calc_FDR_cutoff <- function(gsn, gsp, bf_mat){
     names(bf) <- rownames(bf_mat)
     fdr <- false_discovery_rate(gsn, gsp, bf)
     #fdr_lt_p <- fdr[fdr$FDR < 0.05, ]
-    fdr_lt_p <- fdr[as.numeric(fdr$Score) > 6, ]  ## based on doi: 10.1534/g3.117.041277
+    fdr_lt_p <- fdr[as.numeric(fdr$Score) >= 6, ]  ## based on doi: 10.1534/g3.117.041277
     cutoff_bf <- as.numeric(tail(fdr_lt_p, 1)[, "Score"])
     gene_bf <- fdr_lt_p$Gene
     
@@ -467,6 +469,7 @@ process_guideRawCount <- function(design){
   ## collected guide raw count data from guidefiles
   input_table_list <- list()
   
+  print("Per guide input table size")
   for(i in 1:length(guidefiles)){
     #i <- 1
     input_table <- read.delim(guidefiles[i], header=F, sep="\t")
@@ -491,6 +494,7 @@ process_guideRawCount <- function(design){
   final_lfc_table <- list()
   final_scaled_table <- list()
   
+  print("Per subject input table size")
   for(subject in unique(design$subjects)){
     #subject <- "N"
     subject_input <- input_table_list[[subject]]
@@ -500,18 +504,23 @@ process_guideRawCount <- function(design){
     for(i in T18_replicates){
       input_table_final <- merge(input_table_final, subject_input[[i]], by=c("SEQUENCE", "GENE"), all=TRUE)
     }
-    head(input_table_final)
     print(subject)
+    
     print(dim(input_table_final))
+    #print(head(input_table_final))
     print(summary(input_table_final))
     #input_table_final[is.na(input_table_final)] <- 0 ## set missing value to 0
+    input_table_final <- input_table_final[!is.na(input_table_final[,T0_replicate]),] ## filter read count
     T0_cutoff <- median(input_table_final[,T0_replicate], na.rm=TRUE) * 0.05 ### use 5% of median as noise level cutoff
+    print("T0 cutoff")
     print(paste(subject, T0_cutoff))
     print("Number of guides with T0 count less than T0 cutoff: ")
     print(dim(input_table_final[input_table_final[,T0_replicate] < T0_cutoff,]))
+    print("Number of guides with T0 count greater than 10000: ")
     print(dim(input_table_final[input_table_final[,T0_replicate] > 10000,]))
-    input_table_final <- input_table_final[!is.na(input_table_final[,T0_replicate]),] ## filter read count
+    
     input_table_final <- input_table_final[input_table_final[,T0_replicate] >= T0_cutoff,] ## filter read count
+    input_table_final <- input_table_final[input_table_final[,T0_replicate] <= 10000,] ## filter read count
 
     final_raw_table[[subject]] <- input_table_final
     
@@ -790,11 +799,9 @@ plot_GSEA <- function(screens, tests, data_list, ont="BP"){
    }
 }
 
-
-compute_lfc_residuals <- function(design, lfc_table, plot=FALSE){
-   #design <- eXdesign
-   #lfc_table <- combined_lfc_guide_table
-   
+#design <- eXdesign
+#lfc_table <- combined_lfc_guide_table
+compute_lfc_residuals <- function(design, lfc_table, loess=TRUE, plot=FALSE){
    
    subjects <- unique(design$subjects)
    controls <- unique(design$controls)
@@ -812,7 +819,8 @@ compute_lfc_residuals <- function(design, lfc_table, plot=FALSE){
       control <- subject_control_map[subject_control_map$subjects == x, "controls"]
       residual <- mean_lfc[,x] - mean_lfc[, control]
    })
-   diff_lfc <- as.data.frame(diff_lfc)
+   diff_lfc <- as.data.frame(diff_lfc[, subjects[!subjects %in% controls]])
+   diff_lfc <- cbind(lfc_table[, 1:2], diff_lfc)
    
    loess_fitted_lfc <- sapply(subjects[!subjects %in% controls], function(s){
       control <- subject_control_map[subject_control_map$subjects == s, "controls"]
@@ -827,78 +835,88 @@ compute_lfc_residuals <- function(design, lfc_table, plot=FALSE){
       predicted$residuals
    })
    loess_redisduals_lfc <- as.data.frame(loess_residuals_lfc)
-   
- 
    loess_residuals_lfc <- cbind(lfc_table[, 1:2], loess_residuals_lfc)
    
    ## plot LOESS regression with respect to GFP1 control
    if(plot){
       pdf("qGI_diagnostic_plots.pdf", height = 8, width = 8)
-      
-      p1 <- ggplot(data = mean_lfc, mapping = aes(x = GFP1, y = S)) +
-         geom_pointdensity(show.legend = F) +
-         scale_color_viridis() + 
-         geom_smooth(method = "loess", span=0.1, size = 1.5, se=FALSE) +
-         theme_bw() + 
-         labs(x="mean lfc(GFP)", y="mean lfc(S)") +
-         ggtitle("Mean lfc(S) ~ Mean lfc(GFP)")
-      
-      
-      #plot(mean_lfc[,"GFP1"], mean_lfc[,"S"])
-      #points(loess.smooth(y=mean_lfc[,"S"], x=mean_lfc[,"GFP1"], span=0.4), col="red")
-      
-      p2 <- ggplot(data = data.frame(GFP1=mean_lfc[,"GFP1"], S=diff_lfc[,"S"]), mapping = aes(x = GFP1, y = S)) +
-         geom_pointdensity(show.legend = F) +
-         scale_color_viridis() + 
-         geom_smooth(method = "loess", span=0.1, size = 1.5, se=FALSE) +
-         theme_bw() + 
-         labs(x="mean lfc(GFP)", y="diff lfc(S)") +
-         ggtitle("Diff lfc(S) ~ Mean lfc(GFP)") +
-         geom_hline(yintercept=0, color="red", linetype="dashed", size=1)
-      
-      
-      #plot(mean_lfc[,"GFP1"], diff_lfc[,"S"])
-      #points(mean_lfc[,"GFP1"], loess_fitted_lfc[,"S"], col="red3")
-      
-      #plot(mean_lfc[,"GFP1"], loess_residuals_lfc[,"S"])
-      #points(mean_lfc[,"GFP1"], loess_fitted_lfc[,"S"], col="red3")
-      
-      p3 <- ggplot(data = data.frame(GFP1=mean_lfc[,"GFP1"], S=loess_residuals_lfc[,"S"]), mapping = aes(x = GFP1, y = S)) +
-         geom_pointdensity(show.legend = F) +
-         scale_color_viridis() + 
-         geom_smooth(method = "loess", span=0.1, size = 1.5, se=FALSE) +
-         theme_bw() + 
-         labs(x="mean lfc(GFP)", y="residual lfc(S)") +
-         ggtitle("Residual lfc(S) ~ Mean lfc(GFP)") +
-         geom_hline(yintercept=0, color="red", linetype="dashed", size=1)
-     
-      
-      #plot(mean_lfc[,"GFP1"], loess_residuals_lfc[,"S"])
-      #points(loess.smooth(y=loess_residuals_lfc[,"S"], x=mean_lfc[,"GFP1"], span=0.4), col="red")
-      
-      p4 <- ggplot(data = data.frame(diff=diff_lfc[,"S"], S=loess_residuals_lfc[,"S"]), mapping = aes(x = diff, y = S)) +
-         geom_pointdensity(show.legend = F) +
-         scale_color_viridis() + 
-         geom_abline(intercept = 0, slope = 1, color="red", linetype="dashed", size=1) +
-         theme_bw() + 
-         labs(x="diff lfc(S)", y="residual lfc(S)") +
-         ggtitle("Residual lfc(S) ~ Diff lfc(S)")
-   
-      outp <- plot_grid(p1, p2, p3, p4, ncol = 2, align = 'v', axis="b")
-      print(outp)
-      #plot(loess_fitted_lfc[,"S"], loess_residuals_lfc[,"S"])
-      #points(loess.smooth(y=loess_residuals_lfc[,"S"], x=loess_fitted_lfc[,"S"], span=0.4), col="red")
-      
-      ## plot LOESS regression with respect to subject S
-      #plot(mean_lfc[,"S"], diff_lfc[,"S"])
-      #points(mean_lfc[,"S"], loess_fitted_lfc[,"S"], col="red3")
-      
-      #plot(mean_lfc[,"S"], loess_residuals_lfc[,"S"])
-      #points(loess.smooth(y=loess_residuals_lfc[,"S"], x=mean_lfc[,"S"], span=0.4), col="red")
-      
+      chart.Correlation(diff_lfc[, 3:ncol(diff_lfc)], main="diff of lfc", line.main=1.5, oma=c(2,2,3,2))
+      chart.Correlation(loess_residuals_lfc[, 3:ncol(loess_residuals_lfc)], main="loess residual of lfc", line.main=1.5, oma=c(2,2,3,2))
+      for(i in 1:nrow(subject_control_map)){
+         subject <- subject_control_map[i, "subjects"]
+         control <- subject_control_map[i, "controls"]
+         if(subject != control){
+            p1 <- ggplot(data = mean_lfc, mapping = aes(x = .data[[control]], y = .data[[subject]])) +
+               geom_pointdensity(show.legend = F) +
+               scale_color_viridis() + 
+               geom_smooth(method = "loess", span=0.1, size = 1.5, se=FALSE) +
+               theme_bw() + 
+               labs(x=paste0("mean lfc(",control,")"), y=paste0("mean lfc(", subject, ")")) +
+               ggtitle(paste0("Mean lfc(", subject, ") ~ Mean lfc(", control, ")"))
+            
+            
+            #plot(mean_lfc[,"GFP1"], mean_lfc[,"S"])
+            #points(loess.smooth(y=mean_lfc[,"S"], x=mean_lfc[,"GFP1"], span=0.4), col="red")
+            
+            p2 <- ggplot(data = data.frame(acontrol=mean_lfc[,control], asubject=diff_lfc[,subject]), mapping = aes(x = acontrol, y = asubject)) +
+               geom_pointdensity(show.legend = F) +
+               scale_color_viridis() + 
+               geom_smooth(method = "loess", span=0.1, size = 1.5, se=FALSE) +
+               theme_bw() + 
+               labs(x=paste0("mean lfc(",control,")"), y=paste0("diff lfc(", subject, ")")) +
+               ggtitle(paste0("Diff lfc(", subject, ") ~ Mean lfc(", control, ")")) +
+               geom_hline(yintercept=0, color="red", linetype="dashed", size=1)
+            
+            
+            #plot(mean_lfc[,"GFP1"], diff_lfc[,"S"])
+            #points(mean_lfc[,"GFP1"], loess_fitted_lfc[,"S"], col="red3")
+            
+            #plot(mean_lfc[,"GFP1"], loess_residuals_lfc[,"S"])
+            #points(mean_lfc[,"GFP1"], loess_fitted_lfc[,"S"], col="red3")
+            
+            p3 <- ggplot(data = data.frame(acontrol=mean_lfc[,control], asubject=loess_residuals_lfc[,subject]), mapping = aes(x = acontrol, y = asubject)) +
+               geom_pointdensity(show.legend = F) +
+               scale_color_viridis() + 
+               geom_smooth(method = "loess", span=0.1, size = 1.5, se=FALSE) +
+               theme_bw() + 
+               labs(x=paste0("mean lfc(",control,")"), y=paste0("residual lfc(", subject, ")")) +
+               ggtitle(paste0("Residual lfc(", subject, ") ~ Mean lfc(", control, ")")) +
+               geom_hline(yintercept=0, color="red", linetype="dashed", size=1)
+            
+            
+            #plot(mean_lfc[,"GFP1"], loess_residuals_lfc[,"S"])
+            #points(loess.smooth(y=loess_residuals_lfc[,"S"], x=mean_lfc[,"GFP1"], span=0.4), col="red")
+            
+            p4 <- ggplot(data = data.frame(diff=diff_lfc[,subject], asubject=loess_residuals_lfc[,subject]), mapping = aes(x = diff, y = asubject)) +
+               geom_pointdensity(show.legend = F) +
+               scale_color_viridis() + 
+               geom_abline(intercept = 0, slope = 1, color="red", linetype="dashed", size=1) +
+               theme_bw() + 
+               labs(x=paste0("diff lfc(",subject,")"), y=paste0("residual lfc(", subject, ")")) +
+               ggtitle(paste0("Residual lfc(", subject, ") ~ Diff lfc(", subject, ")"))
+            
+            outp <- plot_grid(p1, p2, p3, p4, ncol = 2, align = 'v', axis="b")
+            print(outp)
+            #plot(loess_fitted_lfc[,"S"], loess_residuals_lfc[,"S"])
+            #points(loess.smooth(y=loess_residuals_lfc[,"S"], x=loess_fitted_lfc[,"S"], span=0.4), col="red")
+            
+            ## plot LOESS regression with respect to subject S
+            #plot(mean_lfc[,"S"], diff_lfc[,"S"])
+            #points(mean_lfc[,"S"], loess_fitted_lfc[,"S"], col="red3")
+            
+            #plot(mean_lfc[,"S"], loess_residuals_lfc[,"S"])
+            #points(loess.smooth(y=loess_residuals_lfc[,"S"], x=mean_lfc[,"S"], span=0.4), col="red")
+            
+         }
+      }
       dev.off()
    }
-   return(loess_residuals_lfc)
+      
+   if(loess){
+      return(loess_residuals_lfc)
+   }else{
+      return(diff_lfc)
+   }
 }
 
 modt_lfc_residuals <- function(design, lfc_residuals){
@@ -915,7 +933,7 @@ modt_lfc_residuals <- function(design, lfc_residuals){
    allGenes <- sort(unique(lfc_residuals$GENE))
    allGenes[1:10]
    lfc_expanded <- NULL
-   c <- 0
+   c <- 0 #genes with less than 2 guides
    valid_gene <- NULL
    for(gene in allGenes){
       sub <- as.matrix(lfc_residuals[lfc_residuals$GENE %in% gene, 3:ncol(lfc_residuals)])
@@ -973,8 +991,9 @@ modt_lfc_residuals <- function(design, lfc_residuals){
 }
 
 plot_qGI_results <- function(test_results, pvalue_cutoff=0.05, gsea=FALSE){
-   #test_results <- qGI_results
+   
    type <- "qGI"
+   
    qGI_results <- lapply(names(test_results), function(s){
       print(s)
       fit.eb <- test_results[[s]]
@@ -1028,19 +1047,57 @@ plot_qGI_results <- function(test_results, pvalue_cutoff=0.05, gsea=FALSE){
          Yt <- Y$t
          names(Yt) <- rownames(Y)
          
-         run_gseGO_simpleList(Yt, s, ont="BP", GO_file=NULL)
-         run_gseGO_simpleList(Yt, s, ont="Reactome_pathway", GO_file=PATHWAY_file)
+         gse1 <- run_gseGO_simpleList(Yt, s, ont="BP", GO_file=NULL, simplify = TRUE)
+         gse2 <- run_gseGO_simpleList(Yt, s, ont="Reactome_pathway", GO_file=PATHWAY_file)
       }
       
       return(Y)
    })
+   
    names(qGI_results) <- names(test_results)
+   
+   ## plot t value correlation
+   
+   t_table <- sapply(names(qGI_results), function(x){
+      res <- qGI_results[[x]]
+      y <- res$t; 
+      names(y) <- row.names(res); 
+      y <- y[sort(names(y))]
+ 
+      return(y)
+   })
+   
+   pdf(paste(type, "correlation_of_tvalue.pdf", sep="_"), height=8, width=8)
+   chart.Correlation(t_table)
+   dev.off()
+   
+   ## plot top gene overlap
+   
+   named_vector_list <- list()
+   for (x in names(qGI_results)){
+      res <- qGI_results[[x]]
+      y <- res$t; 
+      names(y) <- row.names(res); 
+      
+      named_vector_list[[x]] <- y
+   }
+   
+   names(named_vector_list) <- names(qGI_results)
+   tops <- c(10, 50, 100, 500, 1000)
+   pdf(paste(type, "positive_top_genes_overlap.pdf", sep="_"), height=8, width=8)
+   plot_overlap_among_top_genes(geneLists=named_vector_list, tops, decreasing=TRUE)
+   dev.off()
+   
+   pdf(paste(type, "negative_top_genes_overlap.pdf", sep="_"), height=8, width=8)
+   plot_overlap_among_top_genes(geneLists=named_vector_list, tops, decreasing=FALSE)
+   dev.off()
+   
+   
    return(qGI_results)
 }
 
-plot_DESeq2_results <- function(test_results, contrasts, pvalue_cutoff=0.05, gsea=FALSE, verbose=FALSE){
-   #test_results <- dds
-   
+plot_DESeq2_results <- function(dds, contrasts, pvalue_cutoff=0.05, gsea=FALSE, verbose=FALSE){
+
    DESeq2_results <- list()
    
    for(i in 1:nrow(contrasts)){
@@ -1048,11 +1105,9 @@ plot_DESeq2_results <- function(test_results, contrasts, pvalue_cutoff=0.05, gse
       treatSF <- paste(contrast[2], "vs", contrast[3], sep="_")
       print(paste("Processing ", paste(contrast, collapse=" ")))
       
-      res <- results(dds, contrast=contrast, independentFiltering = FALSE, pAdjustMethod = "BH") %>%
-         na.omit() %>%
-         as.data.frame() %>%
-         arrange(stat)
+      res <- results(dds, contrast=contrast, independentFiltering = FALSE, pAdjustMethod = "BH")
       
+      res <- res[order(-res$stat),]
       DESeq2_results[[treatSF]] <- res
       
       sigpv <- res[(res$pvalue < pvalue_cutoff),]
@@ -1067,19 +1122,7 @@ plot_DESeq2_results <- function(test_results, contrasts, pvalue_cutoff=0.05, gse
          
       filename <- paste(treatSF, "DESeq2_results_table.tab", sep="_")
       write.table(res, filename, row.names=T, col.names=NA, quote=F, sep="\t")
-      
-      #write.table(as.matrix(sizeFactors(dds)), paste(treatSF, "Size_factors.txt", sep="_"), row.names = T)
-      
-      if(0){
-         run_enrichGO_simpleList(uplist, "BP", paste(treatSF,"upGenes", sep="_"))
-         run_enrichGO_simpleList(downlist, "BP", paste(treatSF,"downGenes", sep="_"))
-         
-         complexes_up <- overlap_with_CORUM(uplist, idMap, corum)
-         complexes_down <- overlap_with_CORUM(downlist, idMap, corum)
-         write.table(complexes_up, paste(treatSF, "DESeq2_up_overlap_with_Corum.tab", sep="_"), row.names=F, sep="\t", quote=F)
-         write.table(complexes_down, paste(treatSF, "DESeq2_down_overlap_with_Corum.tab", sep="_"), row.names=F, sep="\t", quote=F)
-      }
-         
+     
          
       if(verbose){
          allup <- res[(res$log2FoldChange > 0),]
@@ -1090,12 +1133,12 @@ plot_DESeq2_results <- function(test_results, contrasts, pvalue_cutoff=0.05, gse
          print(dim(alldown)[1])
          
          rld <- vst(dds)
-         png(paste(treatSF, "PCA_plot.png", sep="_"))
+         pdf(paste(treatSF, "PCA_plot.pdf", sep="_"))
          print(plotPCA(rld, intgroup=c("conditions")))
          dev.off()
          
          pdf(paste(treatSF, "MA_plot.pdf", sep="_"))
-         plotMA(res, ylim=c(-2,2))
+         DESeq2::plotMA(res, ylim=c(-2,2))
          dev.off()
          
          pdf(paste(treatSF, "raw_count_plot_upgenes.pdf", sep="_"), width=8, height=8)
@@ -1122,33 +1165,24 @@ plot_DESeq2_results <- function(test_results, contrasts, pvalue_cutoff=0.05, gse
          dev.off()
       }
          
+      df <- as.data.frame(cbind(GENE=rownames(res), res, rankT=rank(res$stat))) %>%
+         arrange(stat)
       pdf(paste(treatSF, "vocano_plot_allgenes.pdf", sep="_"), width=8, height=8)
       
       colors <- rep("black", dim(res)[1])
       colors[row.names(res) %in% row.names(sigpv)] <- "cyan"
       colors[row.names(res) %in% row.names(sig)] <- "red"
-      plot(res$log2FoldChange, -log10(res$pvalue), col=colors, ylim=c(-4, 4), 
+      texts <- rep("", dim(res)[1])
+      texts[row.names(res) %in% row.names(sig)] <- row.names(res)[row.names(res) %in% row.names(sig)]
+      plot(res$log2FoldChange, -log10(res$pvalue), col=colors, ylim=c(0, 30), 
            xlab="Log2(FoldChange)",
            ylab="-Log10(Pvalue)")
+      text(res$log2FoldChange, -log10(res$pvalue), labels=texts, cex=0.5)
       
-      dev.off()
-      
-      df <- cbind(GENE=rownames(res), res, rankT=rank(res$stat)) 
-      
-      pdf(paste(treatSF, "_DESeq2_rank_plot.pdf", sep=""), height=8, width=8)
-      
-      p1 <- ggscatter(df, x = "rankT", y = "stat", xlab="Rank", ylab="Wald test statistics", title=treatSF,
-                      size = abs(df$stat), color = "stat") + 
-         gradient_color(c("cyan4", "white", "red3")) +
-         rremove("legend")
-      
-      p2 <- as_ggplot(text_grob(paste(rev(head(df$GENE, 10)),collapse="\n"), face = "italic", color = "steelblue"))
-      p3 <- as_ggplot(text_grob(paste(rev(tail(df$GENE, 10)),collapse="\n"), face = "italic", color = "steelblue"))
-      
-      p <- p1 + 
-         inset_element(p2, left = 0.1, bottom = 0.1, right = 0.3, top = 0.3) +
-         inset_element(p3, left = 0.7, bottom = 0.7, right = 0.95, top = 0.95)
-      print(p)
+      plot(res$log2FoldChange, log(-log10(res$pvalue)), col=colors, ylim=c(-4, 4), 
+           xlab="Log2(FoldChange)",
+           ylab="Log(-Log10(Pvalue))")
+      text(res$log2FoldChange, log(-log10(res$pvalue)), labels=texts, cex=0.5)
       
       p <- EnhancedVolcano(df,
                            lab = df$GENE,
@@ -1166,11 +1200,33 @@ plot_DESeq2_results <- function(test_results, contrasts, pvalue_cutoff=0.05, gse
                            pointSize = 3.0,
                            drawConnectors = FALSE)
       print(p)
+      
+      dev.off()
+      
+      
+      pdf(paste(treatSF, "_DESeq2_rank_plot.pdf", sep=""), height=8, width=8)
+      
+      p1 <- ggscatter(df, x = "rankT", y = "stat", xlab="Rank", ylab="Wald test statistics", title=treatSF,
+                      size = abs(df$stat), color = "stat") + 
+         gradient_color(c("cyan4", "white", "red3")) +
+         rremove("legend")
+      
+      p2 <- as_ggplot(text_grob(paste(rev(head(df$GENE, 10)),collapse="\n"), face = "italic", color = "steelblue"))
+      p3 <- as_ggplot(text_grob(paste(rev(tail(df$GENE, 10)),collapse="\n"), face = "italic", color = "steelblue"))
+      
+      p <- p1 + 
+         inset_element(p2, left = 0.1, bottom = 0.1, right = 0.3, top = 0.3) +
+         inset_element(p3, left = 0.7, bottom = 0.7, right = 0.95, top = 0.95)
+      print(p)
+      
       dev.off()
       
       if(gsea){
          ress <- res$stat
          names(ress) <- rownames(res)
+         
+         run_enrichGO_simpleList(uplist, "BP", paste(treatSF,"upGenes", sep="_"))
+         run_enrichGO_simpleList(downlist, "BP", paste(treatSF,"downGenes", sep="_"))
          
          run_gseGO_simpleList(ress, treatSF, ont="BP", GO_file=NULL)
          run_gseGO_simpleList(ress, treatSF, ont="Reactome_pathway", GO_file=PATHWAY_file)
@@ -1322,8 +1378,8 @@ plot_JACKS_results <- function(test_results, pvalue_cutoff=0.05, gsea=FALSE){
 }
 
 
-plot_Limma_results <- function(fit.eb, fit, pvalue_cutoff=0.05, gsea=FALSE){
-   type <- "Limma"
+plot_Limma_results <- function(fit.eb, fit, pvalue_cutoff=0.05, gsea=FALSE, type="Limma"){
+   
    limma_results <- list()
    
    for(i in 1:length(colnames(fit.eb$contrasts))){
@@ -1339,10 +1395,10 @@ plot_Limma_results <- function(fit.eb, fit, pvalue_cutoff=0.05, gsea=FALSE){
       tp_up <- rownames(tpall[tpall$P.Value<pvalue_cutoff & tpall$logFC > 1, ])
       tp_down <- rownames(tpall[tpall$P.Value<pvalue_cutoff & tpall$logFC < -1, ])
      
-      pdf(paste(contrast, "_limma_volvanoplot.pdf", sep=""), height=8, width=8)
+      pdf(paste(type, contrast, "volcano_plot.pdf", sep="_"), height=8, width=8)
       
-      volcanoplot(fit.eb,coef=i, highlight=30, xlab="Log fold change", main=contrast, names=rownames(fit.eb$coefficients))
-      plotMA(fit.eb,coef=i, xlab = "Average log-ratioOverT0")
+      limma::volcanoplot(fit.eb,coef=i, highlight=30, xlab="Log fold change", main=contrast, names=rownames(fit.eb$coefficients))
+      limma::plotMA(fit.eb,coef=i, xlab = "Average expression")
       abline(h=0, col="red2")
       plot(x=fit$coefficients[,term2], y=fit$coefficients[,term1], col="white", xlab=paste(term2, "lfc"), ylab=paste(term1, "lfc"))
       colors <- rep("black", dim(fit$coefficients)[1])
@@ -1356,13 +1412,13 @@ plot_Limma_results <- function(fit.eb, fit, pvalue_cutoff=0.05, gsea=FALSE){
       dev.off()
    
       
-      write.table(tpall, paste(contrast, type, "moderated_t_test_results.tab", sep="_"), sep="\t", col.names=NA, quote=F)
+      write.table(tpall, paste(type, contrast, "moderated_t_test_results.tab", sep="_"), sep="\t", col.names=NA, quote=F)
       
       df <- cbind(GENE=rownames(tpall), tpall, rankT=rank(tpall$t)) %>%
          na.omit %>%
          arrange(t)
       
-      pdf(paste(contrast, type, "rank_plot.pdf", sep="_"), height=8, width=8)
+      pdf(paste(type, contrast, "rank_plot.pdf", sep="_"), height=8, width=8)
       
       p1 <- ggscatter(df, x = "rankT", y = "t", xlab="Rank", ylab="Moderated t", title=contrast,
                       size = abs(df$t), color = "t") + 
@@ -1406,4 +1462,53 @@ plot_Limma_results <- function(fit.eb, fit, pvalue_cutoff=0.05, gsea=FALSE){
    }
  
    return(limma_results)
+}
+
+geneLists <- list()
+for(i in 1:4){
+   s <- sample(20)
+   names(s) <- LETTERS[1:20]
+   geneLists[[i]] <- s
+}
+
+tops <- c(5, 10, 15)
+
+plot_overlap_among_top_genes <- function(geneLists, tops, decreasing=TRUE){
+   overlap_count <- vapply(tops, FUN=function(x){
+      top_list <- lapply(geneLists, function(y){
+         y <- sort(y, decreasing=decreasing)
+         return(names(y[1:x]))
+      })
+      common <- Reduce(intersect, top_list)
+      return(length(common))
+   }, FUN.VALUE = integer(1), USE.NAMES = TRUE)
+   
+   df <- data.frame(TOP=as.factor(tops), COUNT=overlap_count, PERCENT=round(overlap_count*100/tops,2))
+   
+   p <- ggplot2::ggplot(df, aes(x=TOP, y=PERCENT)) +
+      geom_bar(stat="identity", position="nudge") +
+      theme_classic()
+   
+   print(p)
+   
+   grid.newpage()
+   lapply(tops, FUN=function(x){
+      top_list <- lapply(geneLists, function(y){
+         y <- sort(y, decreasing=decreasing)
+         return(names(y[1:x]))
+      })
+      pairs <- combn(top_list, 2, simplify = FALSE)
+      
+      lapply(pairs, overlap_pair, intersect)
+      
+      if(length(top_list)>2){
+         triples <- combn(top_list, 3, simplify = FALSE)
+         lapply(triples, overlap_triple, intersect)
+         if(length(top_list)>3){
+            quads <- combn(top_list, 4, simplify = FALSE)
+            lapply(quads, overlap_quad, intersect)
+         }
+      }
+      
+   })
 }

@@ -1,25 +1,65 @@
-library(pheatmap)
-library(gplots)
-library(corrplot)
-library(ggpubr)
-library(patchwork)
-library(Rtsne)
-library(psych)
-library(DESeq2)
-library(knitr)
-library(dplyr)
-library(plotrix)
-library(pcaMethods)
-library(PerformanceAnalytics)
-library(VennDiagram)
-library(limma)
-library(GO.db)
-library(GOSemSim)
-library(ggpointdensity)
-library(viridis)
-library(EnhancedVolcano)
 
-source("C:/GREENBLATT/Rscripts/RNAseq/Function_analysis_for_RNAseq_lib.R")
+
+setup <- function(){
+  library(pheatmap)
+  library(gplots)
+  library(corrplot)
+  library(ggpubr)
+  library(patchwork)
+  library(Rtsne)
+  library(psych)
+  library(DESeq2)
+  library(knitr)
+  library(dplyr)
+  library(plotrix)
+  library(pcaMethods)
+  library(PerformanceAnalytics)
+  library(VennDiagram)
+  library(limma)
+  library(GO.db)
+  library(GOSemSim)
+  library(ggpointdensity)
+  library(viridis)
+  library(EnhancedVolcano)
+  library(GenomicPlot)
+  
+  source("./Function_analysis_for_RNAseq_lib.R")
+  color_store <<- brewer.pal(n = 8, name = "Dark2")
+  mapfile <- "../resources/hgnc_geneName_updates_2019.txt"
+  name_map <<- read.table(mapfile, header=T, stringsAsFactors = FALSE)
+  head(name_map)
+  dim(name_map)
+  
+  #color_store <- c("#00AFBB", "#E7B800", "#A0BDE0", "#0020C2", "#64E986", "#F5DEB3", "#C19A6B", "#E8A317", "#8E7618", "#A0522D", "#990012", "#CB6D51")
+  
+  GOBP_file <<- "C:/GREENBLATT/resource/GSEA_gmt/c5.go.bp.v7.5.1.symbols.gmt"
+  PATHWAY_file <<- "C:/GREENBLATT/resource/GSEA_gmt/ReactomePathways.gmt"
+  
+  corum <<- read.delim("../resources/coreComplexes.txt")
+  idMap <<- read.delim("../resources/Human_id_map.tab")
+  
+  TKO3 <<- read.delim("../resources/TKOv2.1-Human-Library.txt")
+  oldName <- TKO3[, "GENE"]
+  TKO3[, "GENE"] <- update_gene_names(name_map, TKO3[, "GENE"])
+  newName <<- TKO3[, "GENE"]
+  
+  names(newName) <<- oldName
+  
+  for(i in 1:length(oldName)){
+    if(oldName[i] !=  newName[i]){
+      cat(paste(oldName[i], "\t", newName[i], "\n"))
+    }
+  }
+  
+  TKO3_genes <<- unique(TKO3[, "GENE"])
+  TKO3_guides <<- unique(TKO3[, "SEQUENCE"])
+  dim(TKO3)
+  length(TKO3_genes)
+  length(TKO3_guides)
+  
+  control_gene <<- c("EGFP", "LacZ", "luciferase")
+  
+}
 
 arrangeGOterms <- function(terms, cat="BP"){
   #terms <- rownames(terms_padjmean)
@@ -481,7 +521,7 @@ process_guideRawCount <- function(design){
     print(paste(replicate, nrow(input_table)))
     
     old_gene_names_guide <- input_table[,2]
-    new_gene_names_guide <- new[old_gene_names_guide]
+    new_gene_names_guide <- newName[old_gene_names_guide]
    
     input_table[,2] <- new_gene_names_guide
     
@@ -565,7 +605,7 @@ process_geneRawCount <- function(design){
     print(paste(replicate, nrow(input_table)))
     
     old_gene_names_gene <- rownames(input_table)
-    new_gene_names_gene <- new[old_gene_names_gene]
+    new_gene_names_gene <- newName[old_gene_names_gene]
     
     length(unique(old_gene_names_gene))
     length(unique(new_gene_names_gene))
@@ -805,9 +845,11 @@ compute_lfc_residuals <- function(design, lfc_table, loess=TRUE, plot=FALSE){
    
    subjects <- unique(design$subjects)
    controls <- unique(design$controls)
+   rownames(design) <- NULL
    subject_control_map <- design %>%
       select(c(subjects, controls)) %>%
-      unique
+      filter(subjects != controls) %>%
+      unique()
    
    mean_lfc <- sapply(subjects, function(x){
       df <- lfc_table[, grepl(paste0(x, "_"), colnames(lfc_table))]
@@ -815,43 +857,58 @@ compute_lfc_residuals <- function(design, lfc_table, loess=TRUE, plot=FALSE){
    })
    mean_lfc <- as.data.frame(mean_lfc)
    
-   diff_lfc <- sapply(subjects, function(x){
-      control <- subject_control_map[subject_control_map$subjects == x, "controls"]
-      residual <- mean_lfc[,x] - mean_lfc[, control]
+   
+   diff_lfc <- sapply(seq.int(nrow(subject_control_map)), function(x){
+      treat <- subject_control_map[x, "subjects"]
+      control <- subject_control_map[x, "controls"]
+      residual <- mean_lfc[,treat] - mean_lfc[, control]
    })
-   diff_lfc <- as.data.frame(diff_lfc[, subjects[!subjects %in% controls]])
+   colnames(diff_lfc) <- subject_control_map$subjects
+   
    diff_lfc <- cbind(lfc_table[, 1:2], diff_lfc)
    
-   loess_fitted_lfc <- sapply(subjects[!subjects %in% controls], function(s){
-      control <- subject_control_map[subject_control_map$subjects == s, "controls"]
-      predicted <- loessFit(y=diff_lfc[,s], x=mean_lfc[, control], span=0.4)
+   loess_fitted_lfc <- sapply(seq.int(nrow(subject_control_map)), function(x){
+      treat <- subject_control_map[x, "subjects"]
+      control <- subject_control_map[x, "controls"]
+      predicted <- loessFit(y=diff_lfc[,treat], x=mean_lfc[, control], span=0.4)
       predicted$fitted
    })
    loess_fitted_lfc <- as.data.frame(loess_fitted_lfc)
+   colnames(loess_fitted_lfc) <- subject_control_map$subjects
    
-   loess_residuals_lfc <- sapply(subjects[!subjects %in% controls], function(s){
-      control <- subject_control_map[subject_control_map$subjects == s, "controls"]
-      predicted <- loessFit(y=diff_lfc[,s], x=mean_lfc[, control], span=0.4)
+   loess_residuals_lfc <- sapply(seq.int(nrow(subject_control_map)), function(x){
+      treat <- subject_control_map[x, "subjects"]
+      control <- subject_control_map[x, "controls"]
+      predicted <- loessFit(y=diff_lfc[,treat], x=mean_lfc[, control], span=0.4)
       predicted$residuals
    })
-   loess_redisduals_lfc <- as.data.frame(loess_residuals_lfc)
+   loess_residuals_lfc <- as.data.frame(loess_residuals_lfc)
+   colnames(loess_residuals_lfc) <- subject_control_map$subjects
+   
    loess_residuals_lfc <- cbind(lfc_table[, 1:2], loess_residuals_lfc)
    
    ## plot LOESS regression with respect to GFP1 control
    if(plot){
       pdf("qGI_diagnostic_plots.pdf", height = 8, width = 8)
-      chart.Correlation(diff_lfc[, 3:ncol(diff_lfc)], main="diff of lfc", line.main=1.5, oma=c(2,2,3,2))
-      chart.Correlation(loess_residuals_lfc[, 3:ncol(loess_residuals_lfc)], main="loess residual of lfc", line.main=1.5, oma=c(2,2,3,2))
+      if(ncol(diff_lfc) > 3){
+        chart.Correlation(diff_lfc[, 3:ncol(diff_lfc)], main="diff of lfc", 
+                          line.main=1.5, oma=c(2,2,3,2))
+        chart.Correlation(loess_residuals_lfc[, 3:ncol(loess_residuals_lfc)], 
+                          main="loess residual of lfc", line.main=1.5, 
+                          oma=c(2,2,3,2))
+      }
       for(i in 1:nrow(subject_control_map)){
          subject <- subject_control_map[i, "subjects"]
          control <- subject_control_map[i, "controls"]
          if(subject != control){
-            p1 <- ggplot(data = mean_lfc, mapping = aes(x = .data[[control]], y = .data[[subject]])) +
+            p1 <- ggplot(data = mean_lfc, 
+                         mapping = aes(x = .data[[control]], y = .data[[subject]])) +
                geom_pointdensity(show.legend = F) +
                scale_color_viridis() + 
                geom_smooth(method = "loess", span=0.1, size = 1.5, se=FALSE) +
                theme_bw() + 
-               labs(x=paste0("mean lfc(",control,")"), y=paste0("mean lfc(", subject, ")")) +
+               labs(x=paste0("mean lfc(",control,")"), 
+                    y=paste0("mean lfc(", subject, ")")) +
                ggtitle(paste0("Mean lfc(", subject, ") ~ Mean lfc(", control, ")"))
             
             
@@ -990,7 +1047,8 @@ modt_lfc_residuals <- function(design, lfc_residuals){
    return(test_results)
 }
 
-plot_qGI_results <- function(test_results, pvalue_cutoff=0.05, gsea=FALSE){
+plot_qGI_results <- function(test_results, pvalue_cutoff=0.05, gsea=FALSE,
+                             topN = 100, bottomN = 100){
    
    type <- "qGI"
    
@@ -1049,49 +1107,55 @@ plot_qGI_results <- function(test_results, pvalue_cutoff=0.05, gsea=FALSE){
          
          gse1 <- run_gseGO_simpleList(Yt, s, ont="BP", GO_file=NULL, simplify = TRUE)
          gse2 <- run_gseGO_simpleList(Yt, s, ont="Reactome_pathway", GO_file=PATHWAY_file)
+         
+         downlist <- names(head(Yt, n = topN))
+         uplist <- names(tail(Yt, n = bottomN))
+         run_enrichGO_simpleList(uplist, "BP", paste(s, topN, "upGenes", sep="_"))
+         run_enrichGO_simpleList(downlist, "BP", paste(s, bottomN,"downGenes", sep="_"))
       }
       
       return(Y)
    })
    
+   
    names(qGI_results) <- names(test_results)
    
    ## plot t value correlation
+   if(length(qGI_results)> 1) {
+     t_table <- sapply(names(qGI_results), function(x){
+        res <- qGI_results[[x]]
+        y <- res$t; 
+        names(y) <- row.names(res); 
+        y <- y[sort(names(y))]
    
-   t_table <- sapply(names(qGI_results), function(x){
-      res <- qGI_results[[x]]
-      y <- res$t; 
-      names(y) <- row.names(res); 
-      y <- y[sort(names(y))]
- 
-      return(y)
-   })
-   
-   pdf(paste(type, "correlation_of_tvalue.pdf", sep="_"), height=8, width=8)
-   chart.Correlation(t_table)
-   dev.off()
-   
-   ## plot top gene overlap
-   
-   named_vector_list <- list()
-   for (x in names(qGI_results)){
-      res <- qGI_results[[x]]
-      y <- res$t; 
-      names(y) <- row.names(res); 
-      
-      named_vector_list[[x]] <- y
+        return(y)
+     })
+     
+     pdf(paste(type, "correlation_of_tvalue.pdf", sep="_"), height=8, width=8)
+     chart.Correlation(t_table)
+     dev.off()
+     
+     ## plot top gene overlap
+     
+     named_vector_list <- list()
+     for (x in names(qGI_results)){
+        res <- qGI_results[[x]]
+        y <- res$t; 
+        names(y) <- row.names(res); 
+        
+        named_vector_list[[x]] <- y
+     }
+     
+     names(named_vector_list) <- names(qGI_results)
+     tops <- c(10, 50, 100, 500, 1000)
+     pdf(paste(type, "positive_top_genes_overlap.pdf", sep="_"), height=8, width=8)
+     plot_overlap_among_top_genes(geneLists=named_vector_list, tops, decreasing=TRUE)
+     dev.off()
+     
+     pdf(paste(type, "negative_top_genes_overlap.pdf", sep="_"), height=8, width=8)
+     plot_overlap_among_top_genes(geneLists=named_vector_list, tops, decreasing=FALSE)
+     dev.off()
    }
-   
-   names(named_vector_list) <- names(qGI_results)
-   tops <- c(10, 50, 100, 500, 1000)
-   pdf(paste(type, "positive_top_genes_overlap.pdf", sep="_"), height=8, width=8)
-   plot_overlap_among_top_genes(geneLists=named_vector_list, tops, decreasing=TRUE)
-   dev.off()
-   
-   pdf(paste(type, "negative_top_genes_overlap.pdf", sep="_"), height=8, width=8)
-   plot_overlap_among_top_genes(geneLists=named_vector_list, tops, decreasing=FALSE)
-   dev.off()
-   
    
    return(qGI_results)
 }
@@ -1499,7 +1563,7 @@ plot_overlap_among_top_genes <- function(geneLists, tops, decreasing=TRUE){
       })
       pairs <- combn(top_list, 2, simplify = FALSE)
       
-      lapply(pairs, overlap_pair, intersect)
+      lapply(pairs, GenomicPlot::overlap_pair, intersect)
       
       if(length(top_list)>2){
          triples <- combn(top_list, 3, simplify = FALSE)
@@ -1511,4 +1575,414 @@ plot_overlap_among_top_genes <- function(geneLists, tops, decreasing=TRUE){
       }
       
    })
+}
+
+
+scale_normalize <- function(wd, hwd){
+  
+  setwd(wd)
+  format2 <- "_guideRawCount.tab"
+  
+  guidefiles <- list.files(path = getwd(), recursive = TRUE, full.names = FALSE, pattern = format2)
+  length(guidefiles)
+  guidefiles
+  
+  if(1){
+    samples <- gsub("_guideRawCount.tab", "", guidefiles)
+    replicates <- unlist(lapply(guidefiles, function(x)split_group(x,3,7))) #4,6 for dropoutScreen
+    subjects <- unlist(lapply(guidefiles, function(x)split_group(x,3,4))) #4,4 for dropoutScreen
+    design <- data.frame(samples, replicates, subjects)
+    rownames(design) <- guidefiles
+    design <- design[order(design$subjects),]
+    design <- design[!grepl("T10|NR", design$replicates), ]  ## exclude T10 and NR samples
+    if(!file.exists("experimental_design_final.tab")){
+      write.table(design, "experimental_design_final.tab", sep="\t", row.names=T, col.names=NA, quote=F)
+      stop("EDIT experimental_design_final.tab NOW!")
+    }else{
+      eXdesign <- data.frame(read.delim("experimental_design_final.tab", header=TRUE, sep="\t", stringsAsFactors=F))
+    }
+  }
+  
+  rownames(eXdesign) <- eXdesign$X
+  eXdesign <- eXdesign[,-1]
+  
+  eXdesign
+  
+  #sink("process_guideRawCount_log.txt")
+  guide_data <- process_guideRawCount(eXdesign) ## output can be used for BAGEL directly
+  #sink()
+  gene_data <- process_geneRawCount(eXdesign)
+  
+  
+  combined_gene_table <- NULL  ## each row is a gene
+  combined_guide_table <- NULL ## each row is a guide
+  combined_lfc_guide_table <- NULL ## each row is a guide
+  combined_scaled_guide_table <- NULL ## each row is a guide
+  combined_normalized_guide_table <- NULL ## each row is a guide
+  
+  for(subject in unique(eXdesign$subjects)){
+    
+    geneRaw_table <- gene_data[[subject]]
+    guideRaw_table <- guide_data[["Raw"]][[subject]]
+    guideScaled_table <- guide_data[["Scaled"]][[subject]]
+    guideNormalized_table <- guide_data[["Normalized"]][[subject]]
+    guideLFC_table <- guide_data[["LFC"]][[subject]]
+    
+    head(geneRaw_table)
+    dim(geneRaw_table)
+    summary(geneRaw_table)
+    
+    head(guideRaw_table)
+    dim(guideRaw_table)
+    summary(guideRaw_table)
+    
+    head(guideScaled_table)
+    dim(guideScaled_table)
+    summary(guideScaled_table)
+    
+    head(guideNormalized_table)
+    dim(guideNormalized_table)
+    summary(guideNormalized_table)
+    
+    head(guideLFC_table)
+    dim(guideLFC_table)
+    summary(guideLFC_table)
+    
+    geneRaw_table <- geneRaw_table[TKO3_genes, ]
+    
+    if(is.null(combined_gene_table)){
+      combined_gene_table <- geneRaw_table
+    }else{
+      combined_gene_table <- cbind(combined_gene_table, geneRaw_table)  
+    }
+    
+    
+    if(is.null(combined_guide_table)){
+      combined_guide_table <- guideRaw_table
+    }else{
+      combined_guide_table <- merge(combined_guide_table, guideRaw_table, by=c("SEQUENCE", "GENE"), all=TRUE)
+    }
+    
+    if(is.null(combined_scaled_guide_table)){
+      combined_scaled_guide_table <- guideScaled_table
+    }else{
+      combined_scaled_guide_table <- merge(combined_scaled_guide_table, guideScaled_table, by=c("SEQUENCE", "GENE"), all=TRUE)
+    }
+    
+    if(is.null(combined_lfc_guide_table)){
+      combined_lfc_guide_table <- guideLFC_table
+    }else{
+      combined_lfc_guide_table <- merge(combined_lfc_guide_table, guideLFC_table, by=c("SEQUENCE", "GENE"), all=TRUE)
+    }
+    
+    if(is.null(combined_normalized_guide_table)){
+      combined_normalized_guide_table <- guideNormalized_table
+    }else{
+      combined_normalized_guide_table <- merge(combined_normalized_guide_table, guideNormalized_table, by=c("SEQUENCE", "GENE"), all=TRUE)
+    }
+  }
+  
+  
+  if(!dir.exists(hwd)){
+    dir.create(hwd, showWarnings = F)
+  }
+  
+  setwd(hwd)
+  
+  dim(combined_gene_table)
+  
+  print("writing combined table file")
+  write.table(combined_gene_table, file.path(hwd,"combined_gene_rawCount_table.tab"), row.names=T, col.names=NA, sep="\t", quote=F)
+  
+  dim(combined_guide_table)
+  NAc <- apply(combined_guide_table, 1, function(x) sum(is.na(x)))
+  NAs <- NAc == ncol(combined_guide_table)-2
+  combined_guide_table <- combined_guide_table[!NAs,]
+  write.table(combined_guide_table, file.path(hwd,"combined_guide_rawCount_table.tab"), row.names=F, sep="\t", quote=F)
+  combined_guide_filtered <- na.omit(combined_guide_table[, 3:ncol(combined_guide_table)])
+  plot_heatmap(combined_guide_filtered, "guide_rawCount")
+  
+  dim(combined_scaled_guide_table)
+  NAc <- apply(combined_scaled_guide_table, 1, function(x) sum(is.na(x)))
+  NAs <- NAc == ncol(combined_scaled_guide_table)-2
+  combined_scaled_guide_table <- combined_scaled_guide_table[!NAs,]
+  ## "combined_guide_scaledCount_table.tab" can be used as input for DrugZ directly
+  write.table(combined_scaled_guide_table, file.path(hwd,"combined_guide_scaledCount_table.tab"), row.names=F, sep="\t", quote=F)
+  combined_scaled_guide_filtered <- na.omit(combined_scaled_guide_table[, 3:ncol(combined_scaled_guide_table)])
+  plot_heatmap(combined_scaled_guide_filtered, "guide_scaledCount")
+  
+  
+  dim(combined_normalized_guide_table)
+  NAc <- apply(combined_normalized_guide_table, 1, function(x) sum(is.na(x)))
+  NAs <- NAc == ncol(combined_normalized_guide_table)-2
+  combined_normalized_guide_table <- combined_normalized_guide_table[!NAs,]
+  write.table(combined_normalized_guide_table, file.path(hwd,"combined_guide_normalizedCount_table.tab"), row.names=F, sep="\t", quote=F)
+  combined_normalized_guide_filtered <- na.omit(combined_normalized_guide_table[, 3:ncol(combined_normalized_guide_table)])
+  plot_heatmap(combined_normalized_guide_filtered, "guide_normalizedCount")
+  
+  
+  dim(combined_lfc_guide_table)
+  NAc <- apply(combined_lfc_guide_table, 1, function(x) sum(is.na(x)))
+  NAs <- NAc == ncol(combined_lfc_guide_table)-2
+  combined_lfc_guide_table <- combined_lfc_guide_table[!NAs,]
+  write.table(combined_lfc_guide_table, file.path(hwd,"combined_guide_lfc_table.tab"), row.names=F, sep="\t", quote=F)
+  combined_lfc_guide_filtered <- na.omit(combined_lfc_guide_table[, 3:ncol(combined_lfc_guide_table)])
+  plot_heatmap(combined_lfc_guide_filtered, "guide_lfcCount")
+  
+}
+
+
+qGI_analysis <- function(wd, hwd, runGSEA = FALSE){
+  setwd(wd)
+  
+  eXdesign <- data.frame(read.delim("experimental_design_final.tab", header=TRUE, sep="\t", stringsAsFactors=F))
+  
+  rownames(eXdesign) <- eXdesign$X
+  eXdesign <- eXdesign[,-1]
+  
+  eXdesign
+  
+  setwd(hwd)
+  combined_lfc_guide_table <- read.delim("combined_guide_lfc_table.tab", header=T, sep="\t")
+  
+  qGI_dir <- file.path(hwd, "qGI") # "qGI_diff" when loess is set to FALSE in 'compute_lfc_residuals'
+  
+  if(!dir.exists(qGI_dir)){
+    dir.create(qGI_dir, showWarnings = F)
+  }
+  setwd(qGI_dir)
+  
+  dim(combined_lfc_guide_table)
+  summary(combined_lfc_guide_table) 
+  
+  lfc_residuals <- compute_lfc_residuals(eXdesign, combined_lfc_guide_table, loess=TRUE, plot=TRUE)
+  
+  head(lfc_residuals)
+  
+  fiteb_results <- modt_lfc_residuals(eXdesign, lfc_residuals)
+  
+  qGI_results <- plot_qGI_results(test_results = fiteb_results, pvalue_cutoff=0.05, gsea=runGSEA)
+  
+  save(qGI_results, file=file.path(qGI_dir, "results_list.Rdata"))
+}
+
+collect_sort_unsort_data <- function(wd){
+  
+  setwd(wd)
+  format <- "_geneRawCount.tab"
+  guide_format <- "_guideRawCount.tab"
+  terminator <- unlist(strsplit(wd, "/", fixed=T))[6]
+  ## Load file paths and directory names
+  files <- list.files(path = getwd(), recursive = TRUE, full.names = FALSE, pattern = format)
+  guide_files <- list.files(path = getwd(), recursive = TRUE, full.names = FALSE, pattern = guide_format)
+  length(files)
+  files
+  
+  samples <- unlist(lapply(files, function(x)split_sample(x,6,8)))
+  groups <- unlist(lapply(files, function(x)split_group(x,6,7)))
+  
+  data_list <- list()
+  data_list_NA <- list()
+  
+  for(i in 1:length(files)){
+    # i <- 1
+    df_all <- read.table(files[i], header=T, sep="\t")
+    df_all <- df_all[, c(2,4,6,8)]
+    ### update gene names in row.names
+    old_gene_names <- row.names(df_all)
+    new_gene_names <- update_gene_names(name_map, old_gene_names)
+    
+    if( i == 1){
+      name_df <- data.frame(old_gene_names, new_gene_names)
+      name_diff <- name_df[!name_df$old_gene_names %in% name_df$new_gene_names, ]
+      write.table(name_df, "updated_gene_list.tab", sep="\t")
+    }
+    
+    row.names(df_all) <- new_gene_names
+    
+    df <- na.omit(df_all)
+    
+    df_NA <- df_all[!row.names(df_all) %in% row.names(df),]
+    
+    data_list[[samples[i]]] <- df
+    data_list_NA[[samples[i]]] <- df_NA
+  }
+  
+  data_df_NA <- lapply(data_list_NA, cbind)
+  
+  write.table(data_df_NA, "Less_than_4_guides_raw_count.tab", row.names=T, col.names=NA, sep="\t")
+  #data_list[["Ref_1"]]["CPSF1",]
+  #data_list[["UnSort_1"]]["CPSF1",]
+  #data_list[["Sort_1"]]["CPSF1",]
+  
+  dim(data_list[[2]])
+  
+  for(i in 1:length(files)){
+    print(samples[i])
+    test_df <- data_list[[i]]
+    test_df <- test_df[order(test_df[,3]),]
+    #head(test_df)
+    #print(tail(test_df))
+    print(test_df[c("CPSF1","NUDT21", "FIP1", "WDR33"),])
+  }
+  
+  guides <- paste0("guide", c(1:4))
+  unsort_count_df <- NULL
+  sort_count_df <- NULL 
+  
+  
+  sort_samples <- samples[grep("_sorted_", samples)]
+  unsort_samples <- samples[grep("_unsorted_", samples)]
+  
+  
+  for(i in 1:length(sort_samples)){
+    sort_sample <- sort_samples[i]
+    unsort_sample <- unsort_samples[i]
+    
+    sort_col <- paste(sort_samples[i], guides, sep="_")
+    unsort_col <- paste(unsort_samples[i], guides, sep="_")
+    
+    df1c <- data_list[[unsort_sample]]
+    colnames(df1c) <- unsort_col
+    if(is.null(unsort_count_df)){
+      unsort_count_df <- df1c
+    }else{
+      unsort_count_df <- cbind(unsort_count_df, df1c)
+    }
+    
+    df2c <- data_list[[sort_sample]]
+    colnames(df2c) <- sort_col
+    if(is.null(sort_count_df)){
+      sort_count_df <- df2c
+    }else{
+      sort_count_df <- cbind(sort_count_df, df2c)
+    }
+    
+  }
+  
+  #sort_count_df <- sort_count_df[!rownames(sort_count_df) %in% c("NUDT21"),]
+  #unsort_count_df <- unsort_count_df[!rownames(unsort_count_df) %in% c("NUDT21"),]
+  raw_count_df <- cbind(sort_count_df, unsort_count_df)
+  dim(raw_count_df)
+  
+  plot_complexHeatmap(raw_count_df, "raw_count")
+  
+  dsc <- sumstats_col(raw_count_df)
+  
+  write.table(dsc, "descriptive_stats_of_raw_count_perGuide.tab", row.names=T, col.names=NA, sep="\t")
+  
+  #boxplot.matrix(as.matrix(raw_count_df), outline=T)
+  
+  dsr <- sumstats_row(sort_count_df)
+  dur <- sumstats_row(unsort_count_df)
+  dr <- cbind(dsr, dur)
+  write.table(dr, "descriptive_stats_of_sort_count_perGene.tab", row.names=T, col.names=NA, sep="\t")
+  
+  
+  pdf(paste(terminator, "raw_count_boxplot.pdf", sep="_"), width=15, height=6)
+  
+  old.par <- par(mfrow=c(1,1),mar=c(10,4,2,2))
+  
+  boxplot(as.matrix(raw_count_df), outline=T, names=NA)
+  staxlab(1,1:24,colnames(raw_count_df),srt=45)
+  
+  dev.off()
+  par(old.par)
+  
+  
+  sort_count_df <- as.matrix(sort_count_df)
+  unsort_count_df <- as.matrix(unsort_count_df)
+  head(sort_count_df)
+  dim(sort_count_df)
+  summary(sort_count_df)
+  
+  return(list(sorted = sort_count_df, unsorted = unsort_count_df))
+}
+
+# DEseq2 analysis 
+
+sort_unsort_deseq2 <- function(sort_count_df, unsort_count_df) {
+  
+  sample_matrix <- round(cbind(sort_count_df, unsort_count_df))
+  samples <- colnames(sample_matrix)
+  replicates <- dim(sample_matrix)[2]/2
+  conditions <- c(rep("sorted", replicates), rep("unsorted", replicates))
+  s2c <- data.frame(path=samples, conditions, row.names=samples)
+  #s2c$conditions <- relevel(s2c$conditions, ref="unsort")
+  s2c$path <- as.character(s2c$path)
+  #s2c <- s2c[order(sample_order),]
+  s2c
+  
+  guide_stat <- sumstats_col(sample_matrix)
+  guide_stat_sum <- guide_stat$Sum
+  
+  guide_gomean <- geometric.mean(guide_stat_sum)
+  ddsMatrix <- DESeqDataSetFromMatrix(sample_matrix, 
+                                      colData = s2c,
+                                      design = ~ conditions)
+  class(ddsMatrix)
+  sizeFactors(ddsMatrix) <- guide_stat_sum/guide_gomean
+  dds <- DESeq(ddsMatrix, fitType = "local")
+  
+  res <- results(dds, contrast=c("conditions", "sorted", "unsorted"), independentFiltering = FALSE, pAdjustMethod = "BH")
+  
+  contrasts <- matrix(c("conditions", "sorted", "unsorted"), nrow=1, byrow=TRUE)
+  plot_DESeq2_results(dds, contrasts=contrasts, pvalue_cutoff=0.05, gsea=TRUE, verbose=TRUE)
+  
+  
+  ## examine each guide and each sample based on zscore
+  normalized_count_df <- counts(dds, normalized=TRUE)[row.names(res),]
+  plot_complexHeatmap(normalized_count_df, "normalized_count")
+  pdf(paste(terminator, "normalized_count_boxplot.pdf", sep="_"), width=15, height=6)
+  
+  old.par <- par(mfrow=c(1,1),mar=c(10,4,2,2))
+  
+  boxplot(as.matrix(normalized_count_df), outline=T, names=NA)
+  staxlab(1,1:24,colnames(normalized_count_df),srt=45)
+  
+  dev.off()
+  par(old.par)
+  
+  sort_stats <- sumstats_row(normalized_count_df[,grep("_sorted_", colnames(normalized_count_df))])
+  unsort_stats <- sumstats_row(normalized_count_df[,grep("_unsorted_", colnames(normalized_count_df))])
+  
+  sort_diff <- normalized_count_df[,grep("_sorted_", colnames(normalized_count_df))] - unsort_stats$Mean
+  sort_zscore <- round(t(t(sort_diff)/unsort_stats$SD), 2)
+  sig_guide_count <- apply(sort_zscore, 1, function(x)length(x[x>2]))  ## zscore > 2 
+  
+  ## for each guide, find the samples that are significant
+  sig_sample_count <- list()
+  sig_guide_sample_count <- list()
+  for(guide in guides){
+    guide_z <- sort_zscore[, grep(guide, colnames(sort_zscore))]
+    print(colnames(guide_z))
+    sig_sample_count[[guide]] <- apply(guide_z, 1, function(x)length(x[x>2]))
+    header <- paste(guide, "samples", sep="_")
+    sig_guide_sample_count[[header]] <- apply(guide_z, 1, function(x) paste(which(x>2), collapse=","))
+  }
+  sig_sample_count <- as.data.frame(sig_sample_count)
+  sig_guide_sample_count <- as.data.frame(sig_guide_sample_count)
+  
+  ## for each sample, find the guides that are significant
+  sig_guides <- list()
+  sig_sample_guides_count <- list()
+  for(samp in sort_samples){
+    samp_z <- sort_zscore[, grep(samp, colnames(sort_zscore))]
+    print(colnames(samp_z))
+    sig_guides[[samp]] <- apply(samp_z, 1, function(x)length(x[x>2]))
+    header <- paste(samp, "guides", sep="_")
+    sig_sample_guides_count[[header]] <- apply(samp_z, 1, function(x) paste(which(x>2), collapse=","))
+  }
+  sig_guides <- as.data.frame(sig_guides)
+  sig_sample_guides_count <- as.data.frame(sig_sample_guides_count)
+  
+  normalized_count_df_combined <- cbind(res, sig_guide_count, normalized_count_df, sort_stats, unsort_stats)
+  
+  allgene_zscore_combined <- cbind(res, sig_guide_count, sig_sample_count, sig_guide_sample_count, sig_guides, sig_sample_guides_count, sort_zscore)
+  
+  filename <- paste(terminator, "ALL_gene_normalized_data.tab", sep="_")
+  write.table(normalized_count_df_combined, filename, row.names=T, col.names=NA, sep="\t")
+  filename <- paste(terminator, "ALL_gene_zscore.tab", sep="_")
+  write.table(allgene_zscore_combined, filename, row.names=T, col.names=NA, sep="\t")
+  
 }

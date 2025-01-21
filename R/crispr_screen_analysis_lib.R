@@ -22,10 +22,12 @@ setup <- function(){
   library(viridis)
   library(EnhancedVolcano)
   library(GenomicPlot)
+  library(RColorBrewer)
   
-  source("./Function_analysis_for_RNAseq_lib.R")
+  setwd("C:/GREENBLATT/Rscripts/CrisprScreen")
+  source("../RNAseq/Function_analysis_for_RNAseq_lib.R")
   color_store <<- brewer.pal(n = 8, name = "Dark2")
-  mapfile <- "../resources/hgnc_geneName_updates_2019.txt"
+  mapfile <- "./resources/hgnc_geneName_updates_2019.txt"
   name_map <<- read.table(mapfile, header=T, stringsAsFactors = FALSE)
   head(name_map)
   dim(name_map)
@@ -35,10 +37,10 @@ setup <- function(){
   GOBP_file <<- "C:/GREENBLATT/resource/GSEA_gmt/c5.go.bp.v7.5.1.symbols.gmt"
   PATHWAY_file <<- "C:/GREENBLATT/resource/GSEA_gmt/ReactomePathways.gmt"
   
-  corum <<- read.delim("../resources/coreComplexes.txt")
-  idMap <<- read.delim("../resources/Human_id_map.tab")
+  corum <<- read.delim("./resources/coreComplexes.txt")
+  idMap <<- read.delim("./resources/Human_id_map.tab")
   
-  TKO3 <<- read.delim("../resources/TKOv2.1-Human-Library.txt")
+  TKO3 <<- read.delim("./resources/TKOv2.1-Human-Library.txt")
   oldName <- TKO3[, "GENE"]
   TKO3[, "GENE"] <- update_gene_names(name_map, TKO3[, "GENE"])
   newName <<- TKO3[, "GENE"]
@@ -279,11 +281,11 @@ format_for_BAGEL <- function(df, cn){
   return(out_table)
 }
 
-false_discovery_rate <- function(gsn, gsp, namedList){
+false_discovery_rate <- function(gsn, gsp, namedList, desc = TRUE){
   #namedList <- GFP_BF[GFP_BF > 0]
-  namedList <- namedList[order(namedList, decreasing=T)]
+  namedList <- namedList[order(namedList, decreasing=desc)]
   
-  fdr <- data.frame()
+  fdr_list <- list()
   TP <- 0
   FP <- 0
   Precision <- 0
@@ -303,15 +305,18 @@ false_discovery_rate <- function(gsn, gsp, namedList){
     
     Precision <- 1 - fdr_sub
     Recall <- TP/length(gsp)
-    fdr <- rbind(fdr, c(i, sublist, gene, TP, FP, fdr_sub, Precision, Recall))
-    
+    arow <- c(i, sublist, gene, TP, FP, fdr_sub, Precision, Recall)
+    names(arow) <- c("Index", "Score", "Gene", "TP", "FP", "FDR", "Precision", "Recall")
+    fdr_list[[i]] <- arow
     
   }
-  colnames(fdr) <- c("Index", "Score", "Gene", "TP", "FP", "FDR", "Precision", "Recall")
+  fdr <- dplyr::bind_rows(fdr_list)
+  
   return(fdr)
 }
 
-calc_FDR_cutoff <- function(gsn, gsp, bf_mat){
+## based on doi: 10.1534/g3.117.041277, cutoff_for_essential=6 
+calc_FDR_cutoff <- function(gsn, gsp, bf_mat, cutoff_for_essential=6, ge = TRUE){
   fdr_list <- list()
   cutoff_list <- list()
   essential_gene_list <- list()
@@ -319,9 +324,15 @@ calc_FDR_cutoff <- function(gsn, gsp, bf_mat){
     subject <- colnames(bf_mat)[i]
     bf <- bf_mat[,i]
     names(bf) <- rownames(bf_mat)
-    fdr <- false_discovery_rate(gsn, gsp, bf)
-    #fdr_lt_p <- fdr[fdr$FDR < 0.05, ]
-    fdr_lt_p <- fdr[as.numeric(fdr$Score) >= 6, ]  ## based on doi: 10.1534/g3.117.041277
+    
+    if(ge){
+      fdr <- false_discovery_rate(gsn, gsp, bf)
+      fdr_lt_p <- fdr[as.numeric(fdr$Score) >= cutoff_for_essential, ] 
+    }else{
+      fdr <- false_discovery_rate(gsn, gsp, bf, desc = FALSE)
+      fdr_lt_p <- fdr[as.numeric(fdr$Score) <= cutoff_for_essential, ] 
+    }
+     
     cutoff_bf <- as.numeric(tail(fdr_lt_p, 1)[, "Score"])
     gene_bf <- fdr_lt_p$Gene
     
@@ -332,6 +343,46 @@ calc_FDR_cutoff <- function(gsn, gsp, bf_mat){
   return(list("FDR"=fdr_list, "cutoff"=cutoff_list, "essentialGene"=essential_gene_list))
 }
 
+
+essential_ROC <- function(rank_df, cutoff = 0.1, ge = FALSE){
+  gsP <- read.delim("C:/data/raw/EDYTA/bagel-for-knockout-screens-code/training_essentials_CRISPR.txt")
+  gsN <- read.delim("C:/data/raw/EDYTA/bagel-for-knockout-screens-code/training_nonessential.txt")
+  
+  gsP <- update_gene_names(name_map, gsP$Gene)
+  gsN <- update_gene_names(name_map, gsN$Gene)
+  
+  gsp <- intersect(gsP, rownames(rank_df))
+  gsn <- intersect(gsN, rownames(rank_df))
+  
+  fdr_stats_bf <- calc_FDR_cutoff(gsn, gsp, rank_df, cutoff_for_essential=cutoff, ge = ge)
+  
+  essential_list <- fdr_stats_bf$essentialGene
+  names(essential_list)
+  
+  essential_mat <- union2mat(essential_list)
+  dim(essential_mat)
+  tail(essential_mat)
+  
+  colors <- c("#1B85ED", "#A7D400", "#00BFFF", "#00CC00", "#FFD700",  "#636363", "#FFA500")
+  pdf("Essential_gene_overlap_plot.pdf", height=8, width=8)
+  p <- UpSetR::upset(essential_mat, main.bar.color = colors[3], sets.bar.color = colors[2])
+  print(p)
+  dev.off()
+  
+  pdf("ROC_plot.pdf", height=8, width=8)
+
+  
+  plot(1-as.numeric(fdr_stats_bf$FDR[[1]]$Precision), fdr_stats_bf$FDR[[1]]$Recall, type="l", col=colors[1], lwd=2, main="Essential gene ROC", xlab="1-Precision", ylab="Recall")
+  for(i in 2:length(essential_list)){
+    lines(1-as.numeric(fdr_stats_bf$FDR[[i]]$Precision), fdr_stats_bf$FDR[[i]]$Recall, col=colors[i], lwd=2)
+  }
+  abline(v=0.05, lty=2, lwd=1)
+  abline(h=0.95, lty=2, lwd=1)
+  legend("bottomright", legend=names(essential_list), col=colors[1:length(essential_list)], lwd=2)
+  dev.off()
+  
+  return(essential_list)
+}
 
 overlap_with_CORUM <- function(inputList, idMap, corum){
   
@@ -406,35 +457,41 @@ countOccurance <- function(x, alist){
   return(c)
 }
 
-scale_by_T0 <- function(df, operation="none"){
+scale_by_T0 <- function(df, operation="normalize", mincount = 40, maxcount = 10000){
   #df <- input_table_final
   #operation <- "scale"
-  #filter=FALSE
-  #scale=TRUE
+  #head(df)
+ 
+  T0_replicate <- names(df)[grepl("T0", names(df))]
+  df <- df[!is.na(df[, T0_replicate]), ] ## remove guides that counts for T0 is missing
+  df[is.na(df)] <- 0 ## missing guides are considered as 0 for non-T0 samples
+  nc <- ncol(df)
+  cs <- colSums(df[,3:nc])  ## column sum of samples
+  normalized <- t(t(df[,3:nc])*10000000/cs) ## normalize to 10 million reads in each sample
+  print(colSums(normalized, na.rm=TRUE)) ## check total normalized reads
   
-  nc <- dim(df)[2]
+  filters <- normalized[, T0_replicate] >= mincount & normalized[, T0_replicate] < maxcount
+  normalized <- normalized[filters,]
+
+  info_col <- df[filters, 1:2]
   
-  head(df)
-  if(operation == "scale"){
-    cs <- colSums(df[,3:nc], na.rm=TRUE)  ## column sum of samples
-    normalized <- t(t(df[,3:nc])*10000000/cs) ## normalize to 10 million reads in each sample
-    T0mean <- mean(normalized[,1], na.rm=TRUE) ## mean counts for T0
-    scales <- normalized[,1]/T0mean ## derive scale factor for each guide
+  if(operation == "scale"){ ## find out if T0 are started at equal values, what the T18 values will be
+    T0mean <- mean(normalized[,T0_replicate], na.rm=TRUE) ## mean counts for T0
+    scales <- normalized[,T0_replicate]/T0mean ## derive scale factor for each guide
     scaled <- normalized[,2:ncol(normalized)]/scales ## scale each sample
     normalized <-scaled 
   }else if(operation == "normalize"){
-    cs <- colSums(df[,3:nc], na.rm=TRUE)  ## column sum of samples
-    normalized <- t(t(df[,3:nc])*10000000/cs) ## normalize to 10 million reads in each sample
+    message(paste0("Normalized to reads per 10 million, min T0 count: ", mincount,
+                   "max T0 count: ", maxcount))
+    print(colSums(normalized, na.rm=TRUE)) ## check total normalized reads
   }else if(operation == "lfc"){
-    cs <- colSums(df[,3:nc], na.rm=TRUE)  ## column sum of samples
-    normalized <- t(t(df[,3:nc])*10000000/cs) ## normalize to 10 million reads in each sample
     lfc <- log2(normalized[,2:ncol(normalized)]+1) - log2(normalized[,1]+1)  ## add peudocount 1, divide each T18 by T0
     normalized <- lfc
   }else{
-    normalized <- df[,3:nc] ## do nothing
+    stop("operation not supported")
   }
-  colSums(normalized, na.rm=TRUE) ## check total normalized reads
-  out <- cbind(df[,1:2], normalized)
+  
+  out <- cbind(info_col, normalized)
   print(operation)
   print(summary(out))
   
@@ -465,37 +522,33 @@ union2mat <- function(alist){
   return(mat)
 }
 
-## provide a visual inspection of data difference for signicant genes
+## provide a visual inspection of data difference for significant genes
 inspect_data_plot <- function(data_mat, gene, ctl, exp, ylabel){
   #data_mat <- combined_table
   #gene <- "OGA"
   #ctl <- "GFP_"
   #exp <- "N_";
   #ylabel <- "Log2(fold change)"
-  
+  colors <- c("#1B85ED", "#A7D400", "#00BFFF", "#00CC00", "#FFD700",  "#636363", "#FFA500")
   data_mat <- as.data.frame(data_mat)
   
-  ctlcol <- colnames(data_mat)[grepl(ctl, colnames(data_mat))]
-  expcol <- colnames(data_mat)[grepl(exp, colnames(data_mat))]
+  submat <- data_mat[data_mat$GENE==gene, c(ctl, exp)]
+  submat[is.na(submat)] <- 0
+  rownames(submat) <- data_mat[data_mat$GENE==gene, "SEQUENCE"]
+  submat <- type.convert(t(submat), as.is = TRUE)
   
-  control <- t(data_mat[gene, ctlcol])
-  treat <- t(data_mat[gene, expcol])
-  submat <- data.frame(control, treat)
-  rn <- rownames(submat)
-  rn <- gsub(ctl, "", rn)
-  rownames(submat) <- rn
-  colnames(submat) <- c("control", "treat")
+  cols <- colors[1:nrow(submat)]
   
-  cols <- c("red", "blue")
-  matplot(submat, type="b", pch=18, lwd=2, lty=c(1,1), xaxt="n", col=cols, main=gene, ylab=ylabel)
+  matplot(submat, type="b", pch=18, lwd=2, lty=c(1,1), xaxt="n", col=cols, main=gene, ylab=ylabel, ylim = c(min(submat), 1.1*max(submat)))
   staxlab(1, 1:length(rownames(submat)), rownames(submat), srt=45)
-  legend("top", lwd=2, col=cols, legend=gsub("_", "", c(ctl, exp)))
+  legend("topright", col=cols, lwd = 2, legend=colnames(submat), title = "Guide", bty="n", bg="transparent")
+ 
   
 }
 
 ## guide raw count for each guide are combined, the output "guideRawCount_", subject, ".tab"
 ## can be used as input for BAGEL directly
-process_guideRawCount <- function(design){
+process_guideRawCount <- function(design, mincount = 40, maxcount = 10000){
   #wd <- "C:\\GREENBLATT\\Edyta\\dropoutScreen\\all_screens"
   #setwd(wd)
   #design <- eXdesign
@@ -549,31 +602,33 @@ process_guideRawCount <- function(design){
     print(dim(input_table_final))
     #print(head(input_table_final))
     print(summary(input_table_final))
-    #input_table_final[is.na(input_table_final)] <- 0 ## set missing value to 0
-    input_table_final <- input_table_final[!is.na(input_table_final[,T0_replicate]),] ## filter read count
-    T0_cutoff <- median(input_table_final[,T0_replicate], na.rm=TRUE) * 0.05 ### use 5% of median as noise level cutoff
-    print("T0 cutoff")
-    print(paste(subject, T0_cutoff))
-    print("Number of guides with T0 count less than T0 cutoff: ")
-    print(dim(input_table_final[input_table_final[,T0_replicate] < T0_cutoff,]))
-    print("Number of guides with T0 count greater than 10000: ")
-    print(dim(input_table_final[input_table_final[,T0_replicate] > 10000,]))
+    if(0){
+      #input_table_final[is.na(input_table_final)] <- 0 ## set missing value to 0
+      input_table_final <- input_table_final[!is.na(input_table_final[,T0_replicate]),] ## filter read count
+      T0_cutoff <- median(input_table_final[,T0_replicate], na.rm=TRUE) * 0.05 ### use 5% of median as noise level cutoff
+      print("T0 cutoff")
+      print(paste(subject, T0_cutoff))
+      print("Number of guides with T0 count less than T0 cutoff: ")
+      print(dim(input_table_final[input_table_final[,T0_replicate] < T0_cutoff,]))
+      print("Number of guides with T0 count greater than 100000: ")
+      print(dim(input_table_final[input_table_final[,T0_replicate] > 100000,]))
+      
+      input_table_final <- input_table_final[input_table_final[,T0_replicate] >= T0_cutoff,] ## filter read count
+      input_table_final <- input_table_final[input_table_final[,T0_replicate] <= 100000,] ## filter read count
+    }
     
-    input_table_final <- input_table_final[input_table_final[,T0_replicate] >= T0_cutoff,] ## filter read count
-    input_table_final <- input_table_final[input_table_final[,T0_replicate] <= 10000,] ## filter read count
-
     final_raw_table[[subject]] <- input_table_final
     
     ## normalized data output, each samples is normalized to 10 million reads (include T0 and T18)
-    normalized_table <- scale_by_T0(input_table_final, operation="normalize")
+    normalized_table <- scale_by_T0(input_table_final, operation="normalize", mincount, maxcount)
     final_normalized_table[[subject]] <- normalized_table
     
     ## Log2 fold change output, each samples is normalized to 10 million reads (include T0 and T18), then log2(T18/T0)
-    lfc_table <- scale_by_T0(input_table_final, operation="lfc")
+    lfc_table <- scale_by_T0(input_table_final, operation="lfc", mincount, maxcount)
     final_lfc_table[[subject]] <- lfc_table
     
     ## scaled data output, each T18 samples is scaled to T0 sample, then normalized to 10 million ( output T18 only)
-    scaled_table <- scale_by_T0(input_table_final, operation="scale")
+    scaled_table <- scale_by_T0(input_table_final, operation="scale", mincount, maxcount)
     final_scaled_table[[subject]] <- scaled_table
   }
   
@@ -856,7 +911,9 @@ compute_lfc_residuals <- function(design, lfc_table, loess=TRUE, plot=FALSE){
       m <- rowMeans(df, na.rm=TRUE)
    })
    mean_lfc <- as.data.frame(mean_lfc)
-   
+   noNArows <- !apply(mean_lfc,1, function(x)any(is.na(x)))
+   mean_lfc <- mean_lfc[noNArows,] 
+   ## remove row with any  NA
    
    diff_lfc <- sapply(seq.int(nrow(subject_control_map)), function(x){
       treat <- subject_control_map[x, "subjects"]
@@ -865,7 +922,7 @@ compute_lfc_residuals <- function(design, lfc_table, loess=TRUE, plot=FALSE){
    })
    colnames(diff_lfc) <- subject_control_map$subjects
    
-   diff_lfc <- cbind(lfc_table[, 1:2], diff_lfc)
+   diff_lfc <- cbind(lfc_table[noNArows, 1:2], diff_lfc)
    
    loess_fitted_lfc <- sapply(seq.int(nrow(subject_control_map)), function(x){
       treat <- subject_control_map[x, "subjects"]
@@ -885,7 +942,7 @@ compute_lfc_residuals <- function(design, lfc_table, loess=TRUE, plot=FALSE){
    loess_residuals_lfc <- as.data.frame(loess_residuals_lfc)
    colnames(loess_residuals_lfc) <- subject_control_map$subjects
    
-   loess_residuals_lfc <- cbind(lfc_table[, 1:2], loess_residuals_lfc)
+   loess_residuals_lfc <- cbind(lfc_table[noNArows, 1:2], loess_residuals_lfc)
    
    ## plot LOESS regression with respect to GFP1 control
    if(plot){
@@ -1160,7 +1217,8 @@ plot_qGI_results <- function(test_results, pvalue_cutoff=0.05, gsea=FALSE,
    return(qGI_results)
 }
 
-plot_DESeq2_results <- function(dds, contrasts, pvalue_cutoff=0.05, gsea=FALSE, verbose=FALSE){
+plot_DESeq2_results <- function(dds, contrasts, pvalue_cutoff=0.05, gsea=FALSE, 
+                                label=FALSE, verbose=FALSE){
 
    DESeq2_results <- list()
    
@@ -1174,8 +1232,8 @@ plot_DESeq2_results <- function(dds, contrasts, pvalue_cutoff=0.05, gsea=FALSE, 
       res <- res[order(-res$stat),]
       DESeq2_results[[treatSF]] <- res
       
-      sigpv <- res[(res$pvalue < pvalue_cutoff),]
-      sig <- res[(res$padj < pvalue_cutoff),]
+      sigpv <- res[(res$padj < pvalue_cutoff+0.2),] ## low confidence cutoff
+      sig <- res[(res$padj < pvalue_cutoff),] ## high confidence cutoff
       nc <- res[(res$padj >= pvalue_cutoff),]
       sigup <- sig[(sig$log2FoldChange > 0),]
       sigdown <- sig[(sig$log2FoldChange < 0),]
@@ -1241,12 +1299,12 @@ plot_DESeq2_results <- function(dds, contrasts, pvalue_cutoff=0.05, gsea=FALSE, 
       plot(res$log2FoldChange, -log10(res$pvalue), col=colors, ylim=c(0, 30), 
            xlab="Log2(FoldChange)",
            ylab="-Log10(Pvalue)")
-      text(res$log2FoldChange, -log10(res$pvalue), labels=texts, cex=0.5)
+      if(label) text(res$log2FoldChange, -log10(res$pvalue), labels=texts, cex=0.5)
       
       plot(res$log2FoldChange, log(-log10(res$pvalue)), col=colors, ylim=c(-4, 4), 
            xlab="Log2(FoldChange)",
            ylab="Log(-Log10(Pvalue))")
-      text(res$log2FoldChange, log(-log10(res$pvalue)), labels=texts, cex=0.5)
+      if(label) text(res$log2FoldChange, log(-log10(res$pvalue)), labels=texts, cex=0.5)
       
       p <- EnhancedVolcano(df,
                            lab = df$GENE,
@@ -1292,7 +1350,7 @@ plot_DESeq2_results <- function(dds, contrasts, pvalue_cutoff=0.05, gsea=FALSE, 
          run_enrichGO_simpleList(uplist, "BP", paste(treatSF,"upGenes", sep="_"))
          run_enrichGO_simpleList(downlist, "BP", paste(treatSF,"downGenes", sep="_"))
          
-         run_gseGO_simpleList(ress, treatSF, ont="BP", GO_file=NULL)
+         run_gseGO_simpleList(ress, treatSF, ont="BP", GO_file=GOBP_file)
          run_gseGO_simpleList(ress, treatSF, ont="Reactome_pathway", GO_file=PATHWAY_file)
       }
    }
@@ -1578,19 +1636,20 @@ plot_overlap_among_top_genes <- function(geneLists, tops, decreasing=TRUE){
 }
 
 
-scale_normalize <- function(wd, hwd){
+scale_normalize <- function(wd, hwd, samplef = c(5,8), mincount = 40, maxcount = 10000){
   
   setwd(wd)
   format2 <- "_guideRawCount.tab"
   
-  guidefiles <- list.files(path = getwd(), recursive = TRUE, full.names = FALSE, pattern = format2)
+  guidefiles <- list.files(path = getwd(), recursive = TRUE, 
+                           full.names = FALSE, pattern = format2)
   length(guidefiles)
   guidefiles
   
   if(1){
     samples <- gsub("_guideRawCount.tab", "", guidefiles)
-    replicates <- unlist(lapply(guidefiles, function(x)split_group(x,3,7))) #4,6 for dropoutScreen
-    subjects <- unlist(lapply(guidefiles, function(x)split_group(x,3,4))) #4,4 for dropoutScreen
+    replicates <- unlist(lapply(guidefiles, function(x)split_group(x,samplef[1],samplef[2]))) #4,6 for dropoutScreen
+    subjects <- unlist(lapply(guidefiles, function(x)split_group(x,samplef[1],samplef[2]))) #4,4 for dropoutScreen
     design <- data.frame(samples, replicates, subjects)
     rownames(design) <- guidefiles
     design <- design[order(design$subjects),]
@@ -1599,7 +1658,10 @@ scale_normalize <- function(wd, hwd){
       write.table(design, "experimental_design_final.tab", sep="\t", row.names=T, col.names=NA, quote=F)
       stop("EDIT experimental_design_final.tab NOW!")
     }else{
-      eXdesign <- data.frame(read.delim("experimental_design_final.tab", header=TRUE, sep="\t", stringsAsFactors=F))
+      eXdesign <- data.frame(read.delim("experimental_design_final.tab", 
+                                        header=TRUE, 
+                                        sep="\t", 
+                                        stringsAsFactors=F))
     }
   }
   
@@ -1609,7 +1671,7 @@ scale_normalize <- function(wd, hwd){
   eXdesign
   
   #sink("process_guideRawCount_log.txt")
-  guide_data <- process_guideRawCount(eXdesign) ## output can be used for BAGEL directly
+  guide_data <- process_guideRawCount(eXdesign, mincount, maxcount) ## output can be used for BAGEL directly
   #sink()
   gene_data <- process_geneRawCount(eXdesign)
   
@@ -1697,10 +1759,38 @@ scale_normalize <- function(wd, hwd){
   dim(combined_guide_table)
   NAc <- apply(combined_guide_table, 1, function(x) sum(is.na(x)))
   NAs <- NAc == ncol(combined_guide_table)-2
-  combined_guide_table <- combined_guide_table[!NAs,]
+  combined_guide_table <- combined_guide_table[!NAs,] ## remove all_NA rows
+  combined_guide_table[is.na(combined_guide_table)] <- 0 ## convert NA in single sample to 0
   write.table(combined_guide_table, file.path(hwd,"combined_guide_rawCount_table.tab"), row.names=F, sep="\t", quote=F)
   combined_guide_filtered <- na.omit(combined_guide_table[, 3:ncol(combined_guide_table)])
   plot_heatmap(combined_guide_filtered, "guide_rawCount")
+  
+  ## scale by mutiple T0, to make nonT0 samples are comparable across samples ##
+  T0_scaled_guide_table <- combined_guide_table
+  T0_scaled_guide_table[is.na(T0_scaled_guide_table)] <- 0 
+  T0_scaled_guide_table[,3:ncol(T0_scaled_guide_table)] <- T0_scaled_guide_table[,3:ncol(T0_scaled_guide_table)] + 1 ## to avoid devide by 0
+  for(control in unique(eXdesign$controls)){
+    sub_df <- dplyr:: filter(eXdesign, controls == control)
+    control_T0 <- sub_df %>%
+      dplyr::filter(grepl("T0", replicates) & subjects == control) %>%
+      dplyr::pull(replicates)
+    treat_T0s <- sub_df %>%
+      dplyr::filter(grepl("T0", replicates) & subjects != control) %>%
+      dplyr::pull(replicates)
+    for(treat_T0 in treat_T0s){
+      subect <- sub_df %>% dplyr::filter(replicates == treat_T0) %>%
+        dplyr::pull(subjects)
+      treat_columns <- sub_df %>% dplyr::filter(subjects == subject & replicates != treat_T0) %>%
+        dplyr::pull(replicates)
+      T0_scaled_guide_table[, treat_T0] <- T0_scaled_guide_table[, treat_T0]/T0_scaled_guide_table[, control_T0]
+      for(treat_col in treat_columns){
+        T0_scaled_guide_table[, treat_col] <- T0_scaled_guide_table[, treat_col]/T0_scaled_guide_table[, treat_T0]
+      }
+    }
+  }
+  T0_scaled_guide_table[is.na(T0_scaled_guide_table)] <- 0
+  write.table(T0_scaled_guide_table, file.path(hwd,"T0_scaled_guide_rawCount_table_for_MAGeCK.tab"), row.names=F, sep="\t", quote=F)
+  
   
   dim(combined_scaled_guide_table)
   NAc <- apply(combined_scaled_guide_table, 1, function(x) sum(is.na(x)))
@@ -1721,14 +1811,93 @@ scale_normalize <- function(wd, hwd){
   plot_heatmap(combined_normalized_guide_filtered, "guide_normalizedCount")
   
   
-  dim(combined_lfc_guide_table)
+  dim(combined_lfc_guide_table)  ## used for Bagel analysis
   NAc <- apply(combined_lfc_guide_table, 1, function(x) sum(is.na(x)))
   NAs <- NAc == ncol(combined_lfc_guide_table)-2
-  combined_lfc_guide_table <- combined_lfc_guide_table[!NAs,]
+  combined_lfc_guide_table <- combined_lfc_guide_table[!NAs,] ## remove all_NA rows
   write.table(combined_lfc_guide_table, file.path(hwd,"combined_guide_lfc_table.tab"), row.names=F, sep="\t", quote=F)
   combined_lfc_guide_filtered <- na.omit(combined_lfc_guide_table[, 3:ncol(combined_lfc_guide_table)])
   plot_heatmap(combined_lfc_guide_filtered, "guide_lfcCount")
   
+}
+
+preprocess_bagel_dropout <- function(hwd) {
+  setwd(hwd)
+  lfc_df <- read.delim2("combined_guide_lfc_table.tab")
+  lfc_df[is.na(lfc_df)] <- 0
+  write.table(lfc_df, file.path(hwd,"BAGEL", "combined_guide_lfc_for_bagel.tab"), row.names=F, sep="\t", quote=F)
+}
+
+collect_BAGEL_results<- function(wd){
+  setwd(wd)
+  
+  ## start processing bf data
+  bagel_results_list <- list()
+  
+  
+  bagel_files <- list.files(pattern="_bagel.bf")
+  
+  for (bagel_file in bagel_files){
+    bf <- read.delim(bagel_file)
+    subject <- gsub("_bagel.bf", "", bagel_file, fixed=TRUE)
+    bagel_results_list[[subject]] <- bf
+  }
+  
+  
+  bagel_combined <- bagel_results_list[[1]]
+  for(i in 2:length(bagel_results_list)){
+    print(dim(bagel_results_list[[i]]))
+    bagel_combined <- merge(bagel_combined, bagel_results_list[[i]], by=c("GENE"), all=T)
+  }
+  
+  dim(bagel_combined)
+  head(bagel_combined)
+  
+  header <-c("GENE", unlist(lapply(names(bagel_results_list), function(x)paste(x, c("BF", "STD", "NumObs"), sep="_"))))
+  colnames(bagel_combined) <- header
+  
+  bf_table <- bagel_combined[, grepl("_BF", colnames(bagel_combined))]
+  rownames(bf_table) <- bagel_combined$GENE
+  samples <- unlist(lapply(colnames(bf_table), function(x) gsub("_BF", "", x, fixed=TRUE)))
+  colnames(bf_table) <- samples
+  dim(bf_table)
+  NAs <- apply(bf_table, 1, function(x) sum(is.na(x))>0)
+  NA_table <- bf_table[NAs,]
+  bf_table[is.na(bf_table)] <- 0
+  
+  
+  pdf("BF_all_sample_correlation.pdf")
+  col0 <- colorRampPalette(c("cyan4", "red3"))
+  corrplot::corrplot(cor(bf_table), method="number", is.corr = F, col=col0(20), type = "upper", order = "hclust", cl.lim=c(0.65, 1), tl.col = "black", tl.srt = 45)
+  dev.off()
+  
+  return(bf_table)
+}
+
+collect_MAGeCK_results <- function(wd){
+  setwd(wd)
+  MAGeCK_essentials <- list.files(pattern = "_mageck_essential.gene_summary.txt")
+  samples <- unlist(lapply(MAGeCK_essentials, function(x) 
+    gsub("_mageck_essential.gene_summary.txt", "", x, fixed=TRUE)))
+  df_list <- lapply(MAGeCK_essentials, function(x){
+    df <- read.delim(x, header = TRUE) 
+    df <- df[, c(1, 5)]
+    colnames(df) <- c("gene", "fdr")
+    df
+  })
+  
+  fdr_df <- merge(df_list[[1]], df_list[[2]], by = c("gene"))
+  rn <- fdr_df[,1]
+  fdr_df <- fdr_df[,2:ncol(fdr_df)]
+  colnames(fdr_df) <- samples
+  rownames(fdr_df) <- rn
+  
+  pdf("MAGeCK_all_sample_correlation.pdf")
+  col0 <- colorRampPalette(c("cyan4", "red3"))
+  corrplot::corrplot(cor(fdr_df), method="number", is.corr = F, col=col0(20), type = "upper", order = "hclust", cl.lim=c(0.65, 1), tl.col = "black", tl.srt = 45)
+  dev.off()
+  
+  return(fdr_df)
 }
 
 
@@ -1766,21 +1935,179 @@ qGI_analysis <- function(wd, hwd, runGSEA = FALSE){
   save(qGI_results, file=file.path(qGI_dir, "results_list.Rdata"))
 }
 
-collect_sort_unsort_data <- function(wd){
-  
+preprocess_mageck_terminator <- function(wd, samplef=c(2,4), exclude=NULL){
   setwd(wd)
-  format <- "_geneRawCount.tab"
+  dir.create( "MAGeCK")
   guide_format <- "_guideRawCount.tab"
   terminator <- unlist(strsplit(wd, "/", fixed=T))[6]
   ## Load file paths and directory names
+ 
+  files <- list.files(path = wd, recursive = TRUE, full.names = FALSE, pattern = guide_format)
+  files
+  
+  samples <- unlist(lapply(files, function(x)split_sample(x,samplef[1], samplef[2])))
+  
+  if(!is.null(exclude)){
+    files <- files[!samples %in% exclude]
+    samples <- samples[!samples %in% exclude]
+  }
+  
+  samples <- toupper(samples)
+  data_list <- list()
+  
+  
+  for(i in 1:length(files)){
+    # i <- 1
+    df_all <- read.table(files[i], header=F, sep="\t")
+    colnames(df_all) <- c("Guide", "Sequence", samples[i])
+    data_list[[samples[i]]] <- df_all
+    
+  }
+  sapply(data_list, dim)
+  count_df <- Reduce(function(x, y) merge(x, y, all=TRUE), data_list)
+  
+  ### update gene names in row.names
+  old_gene_names <- count_df[,2]
+  new_gene_names <- update_gene_names(name_map, old_gene_names)
+  
+  
+  name_df <- data.frame(old_gene_names, new_gene_names)
+  name_diff <- name_df[!name_df$old_gene_names %in% name_df$new_gene_names, ]
+  write.table(name_diff, "updated_gene_list.tab", sep="\t")
+ 
+  count_df[,2] <- new_gene_names
+  colnames(count_df)[1:2] <- c("sgRNA", "gene")
+  
+  count_df[is.na(count_df)] <- 0
+  
+  
+  write.table(count_df, file.path("MAGeCK", paste0(terminator, "_sgRNA_read_count.tab")), 
+              row.names=F, col.names=T, sep="\t", quote = FALSE)
+  
+  
+  for(i in 1:length(files)){
+    print(samples[i])
+    test_df <- data_list[[samples[i]]]
+    test_df <- test_df[order(test_df[,3]),]
+    #head(test_df)
+    #print(tail(test_df))
+    print(test_df[test_df[,2] %in% c("CPSF1","NUDT21", "FIP1", "WDR33"),])
+  }
+  
+  raw_count_df <- count_df[,3:ncol(count_df)]
+  plot_heatmap(raw_count_df, paste0(terminator, "_guide"))
+  
+  dsc <- sumstats_col(raw_count_df)
+  
+  write.table(dsc, "descriptive_stats_of_raw_count_guide.tab", row.names=T, col.names=NA, sep="\t")
+  
+  
+  pdf(paste(terminator, "raw_count_Guide_boxplot.pdf", sep="_"), width=15, height=6)
+  
+  old.par <- par(mfrow=c(1,1),mar=c(10,4,2,2))
+  
+  boxplot(as.matrix(raw_count_df), outline=T, names=NA)
+  staxlab(1,1:ncol(raw_count_df),colnames(raw_count_df),srt=45)
+  
+  dev.off()
+  par(old.par)
+  
+  design_mat <- data.frame(Samples = colnames(raw_count_df),
+                           baseline = 1,
+                           SORTED = ifelse(grepl("_SORT", colnames(raw_count_df)), 1, 0))
+  
+  write.table(design_mat, file.path("MAGeCK", paste0(terminator, "_design_matrix.tab")), 
+                                    row.names = FALSE, col.names = TRUE,
+                                    sep = "\t", quote = FALSE)
+  
+  sgRNA <- TKO3[, c("GUIDE_ID", "SEQUENCE", "GENE")]
+  write.table(sgRNA, file.path("MAGeCK", "sgRNA_library.tab"), col.names = FALSE, row.names = FALSE, 
+              quote = FALSE, sep = "\t")
+  negative_sgRNA <- TKO3[TKO3$GENE %in% control_gene, "GUIDE_ID"]
+  writeLines(negative_sgRNA, file.path("MAGeCK", "negative_control_sgRNA.txt"))
+  writeLines(control_gene, file.path("MAGeCK", "negative_control_gene.txt"))
+  
+  file.copy(GOBP_file, file.path("MAGeCK", "GOBP.gmt"))
+  
+}
+
+preprocess_mageck_dropout <- function(wd){
+  setwd(wd)
+  dir.create("MAGeCK")
+  
+ 
+  sgRNA <- TKO3[, c("GUIDE_ID", "SEQUENCE", "GENE")]
+  write.table(sgRNA, file.path("MAGeCK", "sgRNA_library.tab"), col.names = FALSE, row.names = FALSE, 
+              quote = FALSE, sep = "\t")
+  negative_sgRNA <- TKO3[TKO3$GENE %in% control_gene, "GUIDE_ID"]
+  writeLines(negative_sgRNA, file.path(wd, "MAGeCK", "negative_control_sgRNA.txt"))
+  writeLines(control_gene, file.path(wd, "MAGeCK", "negative_control_gene.txt"))
+  
+  file.copy(GOBP_file, file.path(wd, "MAGeCK", "GOBP.gmt"), overwrite = TRUE)
+  
+  Guide_raw_count_file <- file.path(wd, "final_analysis/combined_guide_rawCount_table.tab")
+  file.copy(Guide_raw_count_file, file.path(wd, "MAGeCK", "results_sgRNA_read_count.tab"),, overwrite = TRUE)
+  
+  Guide_T0_scaled_count_file <- file.path(wd, "final_analysis/T0_scaled_guide_rawCount_table_for_MAGeCK.tab")
+  file.copy(Guide_T0_scaled_count_file, file.path(wd, "MAGeCK", "T0_scaled_sgRNA_read_count.tab"), overwrite = TRUE)
+  
+}
+
+preprocess_chronos_dropout <- function(hwd, treat = "AGS_EBV", control = "AGS", day = 21){
+  setwd(hwd)
+  dir.create("chronos")
+  
+  
+  sgRNA <- TKO3[, c("GUIDE_ID", "SEQUENCE", "GENE")]
+  colnames(sgRNA) <- c("sgrna", "sequence", "gene")
+  write.csv(sgRNA, file.path("chronos", "sgRNA_library.csv"), 
+              row.names = FALSE, quote = FALSE)
+  negative_sgRNA <- TKO3[TKO3$GENE %in% control_gene, "GUIDE_ID"]
+  writeLines(negative_sgRNA, file.path("chronos", "negative_control_sgRNA.txt"))
+  writeLines(control_gene, file.path("chronos", "negative_control_gene.txt"))
+  
+  Guide_raw_count_df <- read.delim2("combined_guide_rawCount_table.tab")
+  Guide_raw_count_mat <- Guide_raw_count_df[, 3:ncol(Guide_raw_count_df)]
+  rownames(Guide_raw_count_mat) <- Guide_raw_count_df[,1]
+  Guide_raw_count_mat <- t(Guide_raw_count_mat)
+  write.table(Guide_raw_count_mat, file.path("chronos", "sgRNA_raw_read_count.tab"),
+              sep = "\t", col.names = NA, quote = FALSE)
+  
+  sequence_ID <- rownames(Guide_raw_count_mat)
+  cell_line_name <- rep(control, length(sequence_ID))
+  cell_line_name[grepl(treat, sequence_ID)] <- treat
+  cell_line_name[grepl("T0", sequence_ID)] <- "pDNA"
+  pDNA_batch <- rep("batch1", length(sequence_ID))
+  pDNA_batch[grepl(treat, sequence_ID)] <- "batch2"
+  
+  sequence_map <- data.frame(sequence_ID, cell_line_name, days = day, pDNA_batch)
+  write.csv(sequence_map, file.path("chronos/sample_map.csv"), row.names = FALSE)
+  
+  
+}
+
+
+collect_sort_unsort_gene <- function(wd, samplef=c(2,4), groupf=c(2,3), exlude=NULL){
+  
+  format <- "_geneRawCount.tab"
+  terminator <- unlist(strsplit(wd, "/", fixed=T))[6]
+  
+  ## Load file paths and directory names
   files <- list.files(path = getwd(), recursive = TRUE, full.names = FALSE, pattern = format)
-  guide_files <- list.files(path = getwd(), recursive = TRUE, full.names = FALSE, pattern = guide_format)
+  
   length(files)
   files
   
-  samples <- unlist(lapply(files, function(x)split_sample(x,6,8)))
-  groups <- unlist(lapply(files, function(x)split_group(x,6,7)))
+  samples <- unlist(lapply(files, function(x)split_sample(x,samplef[1],samplef[2])))
+  groups <- unlist(lapply(files, function(x)split_group(x,groupf[1],groupf[2])))
   
+  if(!is.null(exclude)){
+    groups <- groups[!samples %in% exclude]
+    files <- files[!samples %in% exclude]
+    samples <- samples[!samples %in% exclude]
+  }
+  
+  samples <- toupper(samples)
   data_list <- list()
   data_list_NA <- list()
   
@@ -1795,7 +2122,7 @@ collect_sort_unsort_data <- function(wd){
     if( i == 1){
       name_df <- data.frame(old_gene_names, new_gene_names)
       name_diff <- name_df[!name_df$old_gene_names %in% name_df$new_gene_names, ]
-      write.table(name_df, "updated_gene_list.tab", sep="\t")
+      write.table(name_diff, "updated_gene_list.tab", sep="\t")
     }
     
     row.names(df_all) <- new_gene_names
@@ -1819,7 +2146,7 @@ collect_sort_unsort_data <- function(wd){
   
   for(i in 1:length(files)){
     print(samples[i])
-    test_df <- data_list[[i]]
+    test_df <- data_list[[samples[i]]]
     test_df <- test_df[order(test_df[,3]),]
     #head(test_df)
     #print(tail(test_df))
@@ -1830,10 +2157,8 @@ collect_sort_unsort_data <- function(wd){
   unsort_count_df <- NULL
   sort_count_df <- NULL 
   
-  
-  sort_samples <- samples[grep("_sorted_", samples)]
-  unsort_samples <- samples[grep("_unsorted_", samples)]
-  
+  sort_samples <- samples[grep("_SORT", samples)]
+  unsort_samples <- samples[grep("_UNSORT", samples)]
   
   for(i in 1:length(sort_samples)){
     sort_sample <- sort_samples[i]
@@ -1865,7 +2190,7 @@ collect_sort_unsort_data <- function(wd){
   raw_count_df <- cbind(sort_count_df, unsort_count_df)
   dim(raw_count_df)
   
-  plot_complexHeatmap(raw_count_df, "raw_count")
+  plot_heatmap(raw_count_df, terminator)
   
   dsc <- sumstats_col(raw_count_df)
   
@@ -1884,7 +2209,7 @@ collect_sort_unsort_data <- function(wd){
   old.par <- par(mfrow=c(1,1),mar=c(10,4,2,2))
   
   boxplot(as.matrix(raw_count_df), outline=T, names=NA)
-  staxlab(1,1:24,colnames(raw_count_df),srt=45)
+  staxlab(1,1:ncol(raw_count_df),colnames(raw_count_df),srt=45)
   
   dev.off()
   par(old.par)
@@ -1896,12 +2221,12 @@ collect_sort_unsort_data <- function(wd){
   dim(sort_count_df)
   summary(sort_count_df)
   
-  return(list(sorted = sort_count_df, unsorted = unsort_count_df))
+  return(list(sorted = sort_count_df, unsorted = unsort_count_df, subject = terminator))
 }
 
 # DEseq2 analysis 
 
-sort_unsort_deseq2 <- function(sort_count_df, unsort_count_df) {
+sort_unsort_deseq2 <- function(sort_count_df, unsort_count_df, terminator) {
   
   sample_matrix <- round(cbind(sort_count_df, unsort_count_df))
   samples <- colnames(sample_matrix)
@@ -1932,28 +2257,29 @@ sort_unsort_deseq2 <- function(sort_count_df, unsort_count_df) {
   
   ## examine each guide and each sample based on zscore
   normalized_count_df <- counts(dds, normalized=TRUE)[row.names(res),]
-  plot_complexHeatmap(normalized_count_df, "normalized_count")
+  plot_heatmap(normalized_count_df, "normalized_count")
   pdf(paste(terminator, "normalized_count_boxplot.pdf", sep="_"), width=15, height=6)
   
   old.par <- par(mfrow=c(1,1),mar=c(10,4,2,2))
   
   boxplot(as.matrix(normalized_count_df), outline=T, names=NA)
-  staxlab(1,1:24,colnames(normalized_count_df),srt=45)
+  staxlab(1,1:ncol(normalized_count_df),colnames(normalized_count_df),srt=45)
   
   dev.off()
   par(old.par)
   
-  sort_stats <- sumstats_row(normalized_count_df[,grep("_sorted_", colnames(normalized_count_df))])
-  unsort_stats <- sumstats_row(normalized_count_df[,grep("_unsorted_", colnames(normalized_count_df))])
+  sort_stats <- sumstats_row(normalized_count_df[,grep("_SORT", colnames(normalized_count_df))])
+  unsort_stats <- sumstats_row(normalized_count_df[,grep("_UNSORT", colnames(normalized_count_df))])
   
-  sort_diff <- normalized_count_df[,grep("_sorted_", colnames(normalized_count_df))] - unsort_stats$Mean
+  sort_diff <- normalized_count_df[,grep("_SORT", colnames(normalized_count_df))] - unsort_stats$Mean
   sort_zscore <- round(t(t(sort_diff)/unsort_stats$SD), 2)
   sig_guide_count <- apply(sort_zscore, 1, function(x)length(x[x>2]))  ## zscore > 2 
   
   ## for each guide, find the samples that are significant
   sig_sample_count <- list()
   sig_guide_sample_count <- list()
-  for(guide in guides){
+  Guides <- paste0("guide", seq_len(4))
+  for(guide in Guides){
     guide_z <- sort_zscore[, grep(guide, colnames(sort_zscore))]
     print(colnames(guide_z))
     sig_sample_count[[guide]] <- apply(guide_z, 1, function(x)length(x[x>2]))
@@ -1966,6 +2292,8 @@ sort_unsort_deseq2 <- function(sort_count_df, unsort_count_df) {
   ## for each sample, find the guides that are significant
   sig_guides <- list()
   sig_sample_guides_count <- list()
+  sort_samples <- samples[grep("_SORT", samples)]
+  sort_samples <- unique(gsub("_guide[1-4]", "", sort_samples))
   for(samp in sort_samples){
     samp_z <- sort_zscore[, grep(samp, colnames(sort_zscore))]
     print(colnames(samp_z))
